@@ -68,7 +68,8 @@ import { fitWholeCharacter, prepareImage } from './lib/imageCrop'
 import { inferLtx25Selections, inferSelections } from './lib/modelSelection'
 import { choices, type ObjectInfo } from './lib/comfyInfo'
 import { useLivePreview, type LivePreview, type LiveProgress } from './lib/useLivePreview'
-import { RenderSize, snapToMinimaxResolution } from './components/RenderSize'
+import { RenderSize } from './components/RenderSize'
+import { snapToMinimaxResolution } from './lib/minimaxResolutions'
 import { ImageCrop } from './components/ImageCrop'
 import { ZImageWorkspace } from './components/ZImageWorkspace'
 import { AnimeWorkspace } from './components/AnimeWorkspace'
@@ -556,6 +557,31 @@ function comfyTerminalState(entry: { status?: { status_str?: string; completed?:
   return null
 }
 
+// A render can finish and land on disk even when the app fails to notice: a
+// downstream node (preview, upscale, reference-frame extraction) can error
+// after the main SaveVideo/SaveImage already wrote its file, ComfyUI's history
+// can be queried before it is done being written, or a restart can wipe
+// ComfyUI's in-memory history outright. Before any code path gives up on a
+// job, re-check history once and, failing that, fall back to scanning the
+// output folder for a file ComfyUI wrote after this job was created — so a
+// transient hiccup here never hides a render that actually completed.
+async function resolveJobOutputFile(
+  comfyUrl: string,
+  outputDirectory: string,
+  promptId: string,
+  mediaType: 'video' | 'audio' | 'image',
+  since: number,
+): Promise<string | null> {
+  try {
+    const history = await window.minimax.getHistory(comfyUrl, promptId)
+    const outputFile = extractOutputFile(history, promptId, mediaType)
+    const resolved = outputFile ? await window.minimax.resolveOutput(outputDirectory, outputFile) : null
+    if (resolved) return resolved
+  } catch { /* ComfyUI may no longer know this prompt; fall back to a directory scan. */ }
+  if (mediaType === 'image') return null
+  try { return await window.minimax.findLatestOutput(outputDirectory, since, mediaType) } catch { return null }
+}
+
 function modelPrecisionLabel(model?: string) {
   if (!model) return undefined
   if (/nvfp4/i.test(model)) return 'NVFP4'
@@ -917,7 +943,16 @@ function App() {
           const outputUrl = playableOutputUrl(extractOutputUrl(history, promptId, settings.comfyUrl, mediaType))
           const terminalState = comfyTerminalState(entry)
           if (terminalState === 'failed') {
-            setJobs((current) => current.map((item) => item.id === job.id ? { ...item, status: 'failed', error: 'ComfyUI reported an execution error. The original may still be saved if upscaling failed.' } : item))
+            // A node after the main save (preview, upscale, extraction) can be
+            // what actually errored. Don't discard an output that already made
+            // it to disk just because the overall prompt status is "error".
+            const recovered = await resolveJobOutputFile(settings.comfyUrl, settings.outputDirectory, promptId, mediaType, job.createdAt)
+            if (recovered) {
+              const localUrl = await window.minimax.mediaUrl(recovered)
+              setJobs((current) => current.map((item) => item.id === job.id ? { ...item, status: 'completed', progress: 100, renderDurationMs: Date.now() - item.createdAt, outputUrl: localUrl, localOutputPath: recovered, progressLabel: 'Rendered, but a later step (preview/upscale/extraction) reported an error.' } : item))
+            } else {
+              setJobs((current) => current.map((item) => item.id === job.id ? { ...item, status: 'failed', error: 'ComfyUI reported an execution error. The original may still be saved if upscaling failed.' } : item))
+            }
           } else if (mediaType === 'image' && outputUrl && terminalState === 'completed') {
             const outputFile = extractOutputFile(history, promptId, 'image')
             if (!outputFile) return
@@ -950,7 +985,9 @@ function App() {
             setJobs((current) => current.map((item) => item.id === job.id ? { ...item, status: 'completed', progress: 100, renderDurationMs: Date.now() - item.createdAt, outputUrl: localUrl, localOutputPath: localOutput ?? undefined } : item))
           } else if (terminalState === 'completed') {
             const outputFile = extractOutputFile(history, promptId, mediaType)
-            const localOutput = outputFile ? await window.minimax.resolveOutput(settings.outputDirectory, outputFile) : null
+            const localOutput = outputFile
+              ? await window.minimax.resolveOutput(settings.outputDirectory, outputFile)
+              : await resolveJobOutputFile(settings.comfyUrl, settings.outputDirectory, promptId, mediaType, job.createdAt)
             const localUrl = localOutput ? await window.minimax.mediaUrl(localOutput) : null
             if (localUrl) recordMovieOutput(job.movieLink, localUrl)
             if (localOutput) recordCharacterTurntable(job.characterProjectId, localOutput)
@@ -962,18 +999,41 @@ function App() {
         }).catch(() => undefined)
       }
       const checkedAt = Date.now()
-      void window.minimax.getQueue(settings.comfyUrl).then((queue) => setJobs((current) => current.map((job) => {
-        if (!job.promptId || !['queued', 'running'].includes(job.status)) return job
-        const queueState = queuePromptState(queue, job.promptId)
-        if (queueState === 'running') return job.status === 'running' && !job.queueMissingAt && !job.queuePosition ? job : { ...job, status: 'running', queueMissingAt: undefined, queuePosition: undefined, progressLabel: 'ComfyUI started rendering' }
-        if (queueState === 'queued') {
-          const queuePosition = queuePromptPosition(queue, job.promptId)
-          return job.status === 'queued' && !job.queueMissingAt && job.queuePosition === queuePosition ? job : { ...job, status: 'queued', queueMissingAt: undefined, queuePosition, progress: Math.min(job.progress, 8), progressLabel: 'Waiting in the ComfyUI queue' }
+      void window.minimax.getQueue(settings.comfyUrl).then(async (queue) => {
+        // Jobs that have been missing from the queue for 7+ seconds get one
+        // last recovery attempt (history, then a directory scan) before being
+        // declared failed. A restart clears ComfyUI's in-memory history, and a
+        // slow save/extraction step can leave the completion handler above
+        // still mid-flight — neither means the render itself was lost.
+        const recoveries = new Map<string, string | null>()
+        for (const job of jobsRef.current) {
+          if (!job.promptId || !['queued', 'running'].includes(job.status)) continue
+          if (queuePromptState(queue, job.promptId)) continue
+          const missingSince = job.queueMissingAt ?? checkedAt
+          if (checkedAt - missingSince < 7_000) continue
+          recoveries.set(job.id, await resolveJobOutputFile(settings.comfyUrl, settings.outputDirectory, job.promptId, job.mediaType ?? 'video', job.createdAt))
         }
-        const missingSince = job.queueMissingAt ?? checkedAt
-        if (checkedAt - missingSince < 7_000) return { ...job, queueMissingAt: missingSince, progressLabel: 'Resolving ComfyUI completion…' }
-        return { ...job, status: 'failed', queueMissingAt: undefined, error: 'ComfyUI no longer reports this prompt in its queue or history. It may have been interrupted, cleared, or rejected before execution.' }
-      }))).catch(() => undefined)
+        const recoveredUrls = new Map<string, string>()
+        for (const [jobId, path] of recoveries) {
+          if (path) recoveredUrls.set(jobId, await window.minimax.mediaUrl(path))
+        }
+        setJobs((current) => current.map((job) => {
+          if (!job.promptId || !['queued', 'running'].includes(job.status)) return job
+          const queueState = queuePromptState(queue, job.promptId)
+          if (queueState === 'running') return job.status === 'running' && !job.queueMissingAt && !job.queuePosition ? job : { ...job, status: 'running', queueMissingAt: undefined, queuePosition: undefined, progressLabel: 'ComfyUI started rendering' }
+          if (queueState === 'queued') {
+            const queuePosition = queuePromptPosition(queue, job.promptId)
+            return job.status === 'queued' && !job.queueMissingAt && job.queuePosition === queuePosition ? job : { ...job, status: 'queued', queueMissingAt: undefined, queuePosition, progress: Math.min(job.progress, 8), progressLabel: 'Waiting in the ComfyUI queue' }
+          }
+          const missingSince = job.queueMissingAt ?? checkedAt
+          if (checkedAt - missingSince < 7_000) return { ...job, queueMissingAt: missingSince, progressLabel: 'Resolving ComfyUI completion…' }
+          if (!recoveries.has(job.id)) return job
+          const recoveredPath = recoveries.get(job.id)
+          const recoveredUrl = recoveredUrls.get(job.id)
+          if (recoveredPath && recoveredUrl) return { ...job, status: 'completed', progress: 100, renderDurationMs: Date.now() - job.createdAt, outputUrl: recoveredUrl, localOutputPath: recoveredPath, queueMissingAt: undefined, progressLabel: 'Recovered from the output folder after ComfyUI lost track of this prompt.' }
+          return { ...job, status: 'failed', queueMissingAt: undefined, error: 'ComfyUI no longer reports this prompt in its queue or history. It may have been interrupted, cleared, or rejected before execution.' }
+        }))
+      }).catch(() => undefined)
     }, 1000)
     return () => window.clearInterval(timer)
   }, [pendingKey, settings, status.connected])

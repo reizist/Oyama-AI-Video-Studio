@@ -1,12 +1,8 @@
 import { useEffect, useState } from 'react'
 import { LTX25_MAX_PIXELS, LTX25_RESOLUTIONS, ltx25ResolutionLabel } from '../lib/ltx25Resolutions'
+import { MINIMAX_RESOLUTIONS } from '../lib/minimaxResolutions'
 
-const sizes: Record<string, string[]> = {
-  landscape: ['608x352', '736x416', '768x448', '864x480', '960x544', '1024x576', '1056x608', '1152x640', '1216x672', '1280x736', '1344x768'],
-  ultrawide: ['672x288', '896x384', '1120x480', '1216x512', '1344x576'],
-  portrait: ['352x608', '416x736', '448x768', '480x864', '544x960', '576x1024', '608x1056', '640x1152', '672x1216', '736x1280', '768x1344'],
-  square: ['512x512', '640x640', '768x768'],
-}
+const sizes: Record<string, readonly string[]> = MINIMAX_RESOLUTIONS
 type Orientation = 'landscape' | 'ultrawide' | 'portrait' | 'square'
 
 const imageSizes: Record<string, string[]> = {
@@ -18,24 +14,6 @@ const imageSizes: Record<string, string[]> = {
   '3:4': ['768x1024', '960x1280', '1152x1536', '1440x1920'],
   '2:3': ['672x1024', '768x1152', '1024x1536', '1280x1920'],
   '9:16': ['576x1024', '768x1344', '864x1536', '1080x1920'],
-}
-
-// Z-Image/Anime canvases pick free image aspect ratios and megapixels, but
-// MiniMax H3 I2V only accepts a fixed, capped list of resolutions (see `sizes`
-// below). Handing an image canvas size to the video workspace unchanged can
-// silently exceed that cap (e.g. 1024x1024 > 1344x768's pixel budget), which
-// ComfyUI rejects at prompt-validation time before it ever reaches history or
-// the log. Snap to the nearest same-orientation MiniMax size before handoff.
-export function snapToMinimaxResolution(resolution: string): string {
-  const [w, h] = resolution.split('x').map(Number)
-  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return '1344x768'
-  const orientation: Orientation = w === h ? 'square' : w / h >= 2.1 ? 'ultrawide' : w > h ? 'landscape' : 'portrait'
-  const area = w * h
-  return sizes[orientation].reduce((best, option) => {
-    const [ow, oh] = option.split('x').map(Number)
-    const [bw, bh] = best.split('x').map(Number)
-    return Math.abs(ow * oh - area) < Math.abs(bw * bh - area) ? option : best
-  })
 }
 
 export function RenderSize({ value, onChange, provider = 'minimax' }: { value: string; onChange(value: string): void; provider?: 'minimax' | 'ltx25' | 'zimage' }) {
