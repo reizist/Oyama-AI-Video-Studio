@@ -108,6 +108,7 @@ export function installBrowserMock() {
     installRife: async () => ({ installed: false, error: 'Open the desktop app to install RIFE.' }),
     interpolateVideo: async () => { throw new Error('Open the desktop app to interpolate video with RIFE.') },
     showOutput: async () => undefined,
+    trashOutput: async () => { throw new Error('Open the desktop app to move output files to Trash.') },
     findLatestOutput: async () => null,
     resolveOutput: async () => null,
     listOllamaModels: async (_url, provider = 'ollama') => provider === 'lmstudio'

@@ -1,4 +1,5 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol, shell } from 'electron'
+import { trashOutput } from './trashOutput.js'
 import { createReadStream, existsSync } from 'node:fs'
 import { cp, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve } from 'node:path'
@@ -939,6 +940,11 @@ app.whenReady().then(async () => {
     }
     const history = await comfyFetch(url, `/history/${encodeURIComponent(promptId)}`) as Record<string, unknown>
     return { cancelled: false, state: promptId in history ? 'finished' as const : 'unknown' as const }
+  })
+  ipcMain.handle('outputs:trash', async (_event, source: string) => {
+    if (typeof source !== 'string' || !source) throw new Error('An output file is required.')
+    const settings = await loadSettings()
+    return trashOutput(source, settings.outputDirectory, settings.comfyUrl, (path) => shell.trashItem(path))
   })
   ipcMain.handle('outputs:latest', async (_event, outputDirectory: string, since: number, kind: 'video' | 'audio' = 'video') => {
     return findLatestMedia(outputDirectory, since, kind)
