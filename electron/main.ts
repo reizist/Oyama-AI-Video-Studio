@@ -151,6 +151,10 @@ protocol.registerSchemesAsPrivileged([
 ])
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
+// WSLg's native Wayland/Ozone backend has broken IME support for CJK input
+// (ibus never receives composition events) and an unstable GPU process init.
+// Forcing XWayland fixes both without affecting native Linux/Windows/macOS.
+if (process.platform === 'linux') app.commandLine.appendSwitch('ozone-platform-hint', 'x11')
 
 function defaultSettings(): AppSettings {
   const root = join(app.getPath('documents'), 'ComfyUI', 'models')

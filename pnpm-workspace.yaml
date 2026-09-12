@@ -1,6 +1,16 @@
 packages:
   - .
 
+allowBuilds:
+  electron: true
+  electron-winstaller: true
+  esbuild: true
+
 onlyBuiltDependencies:
   - electron
   - esbuild
+
+overrides:
+  '@electron/rebuild': '3.7.2'
+  '@electron/node-gyp': '10.2.0-electron.2'
+  electron-builder-squirrel-windows: '26.0.12'

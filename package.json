@@ -56,12 +56,6 @@
     "vite": "^6.0.7",
     "wait-on": "^8.0.1"
   },
-  "pnpm": {
-    "overrides": {
-      "@electron/rebuild": "3.7.2",
-      "electron-builder-squirrel-windows": "26.0.12"
-    }
-  },
   "build": {
     "appId": "com.james.oyamaaivideostudio",
     "productName": "Oyama AI Video Studio",

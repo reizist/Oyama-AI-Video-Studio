@@ -33,6 +33,7 @@ import {
   MessageSquareText,
   Minus,
   Music2,
+  Palette,
   PanelLeftClose,
   Pencil,
   Play,
@@ -70,6 +71,7 @@ import { useLivePreview, type LivePreview, type LiveProgress } from './lib/useLi
 import { RenderSize } from './components/RenderSize'
 import { ImageCrop } from './components/ImageCrop'
 import { ZImageWorkspace } from './components/ZImageWorkspace'
+import { AnimeWorkspace } from './components/AnimeWorkspace'
 import { ClipEditor } from './components/ClipEditor'
 import { FrameBookmarkStudio, type BookmarkVideo } from './components/FrameBookmarkStudio'
 import { MoviePlanner } from './components/MoviePlanner'
@@ -162,7 +164,7 @@ type PersistedWorkspace = {
 
 type MovieLink = { projectId: string; sceneId: string; shotId: string }
 
-type WorkspaceProjectScope = 'create' | 'ltx25' | 'zimage' | 'music'
+type WorkspaceProjectScope = 'create' | 'ltx25' | 'zimage' | 'anime' | 'music'
 type WorkspaceProject = { id: string; name: string; scope: WorkspaceProjectScope; snapshot: Record<string, unknown>; createdAt: number; updatedAt: number }
 const WORKSPACE_PROJECTS_KEY = 'minimax.workspace-projects'
 
@@ -178,11 +180,11 @@ function saveWorkspaceProjects(projects: WorkspaceProject[]) {
 }
 
 function workspaceProjectScope(view: View): WorkspaceProjectScope | null {
-  return view === 'create' || view === 'ltx25' || view === 'zimage' || view === 'music' ? view : null
+  return view === 'create' || view === 'ltx25' || view === 'zimage' || view === 'anime' || view === 'music' ? view : null
 }
 
 function workspaceProjectLabel(scope: WorkspaceProjectScope) {
-  return scope === 'create' ? 'MiniMax H3 / Ref2VA' : scope === 'ltx25' ? 'LTX 2.5' : scope === 'zimage' ? 'Create Image' : 'Music'
+  return scope === 'create' ? 'MiniMax H3 / Ref2VA' : scope === 'ltx25' ? 'LTX 2.5' : scope === 'zimage' ? 'Create Image' : scope === 'anime' ? 'Anime & Checkpoint' : 'Music'
 }
 
 const H3_RANDOM_SEED_LIMIT = 1_000_000_000
@@ -673,6 +675,7 @@ function App() {
   const [createResetKey, setCreateResetKey] = useState(0)
   const [ltxResetKey, setLtxResetKey] = useState(0)
   const [zImageResetKey, setZImageResetKey] = useState(0)
+  const [animeResetKey, setAnimeResetKey] = useState(0)
   const [aceResetKey, setAceResetKey] = useState(0)
   const [ltxResetAt, setLtxResetAt] = useState(0)
   useEffect(() => {
@@ -1321,7 +1324,7 @@ function App() {
       seed, seedLocked, advanced, liveEnabled, livePreviewMode, upscaleMode, textEncoderPreference, turbo8Profile, rtxModel, firstFrame: withoutPreview(firstFrame), lastFrame: withoutPreview(lastFrame),
       referenceImages: referenceImages.map((file) => withoutPreview(file)), referenceVideos: referenceVideos.map((file) => withoutPreview(file)), referenceAudios: referenceAudios.map((file) => withoutPreview(file)), selectedReferenceCharacterIds, selectedReferenceLocationIds,
     }
-    const storageKey = scope === 'ltx25' ? 'ltx25.workspace' : scope === 'zimage' ? 'minimax.zimage-workspace' : 'acestep.workspace'
+    const storageKey = scope === 'ltx25' ? 'ltx25.workspace' : scope === 'zimage' ? 'minimax.zimage-workspace' : scope === 'anime' ? 'anime.workspace' : 'acestep.workspace'
     try { return JSON.parse(localStorage.getItem(storageKey) ?? '{}') as Record<string, unknown> } catch { return {} }
   }
 
@@ -1341,10 +1344,11 @@ function App() {
       const saved = { ...workspaceDefaults, ...project.snapshot } as PersistedWorkspace
       setMode(saved.mode); setPrompt(saved.prompt); setDuration(saved.duration); setResolution(saved.resolution); setTurbo(saved.turbo); setSteps(saved.steps); setSampler(saved.sampler); setScheduler(saved.scheduler); setExperimentalSampling(saved.experimentalSampling); setRefImageSize(saved.refImageSize); setNoDialogue(saved.noDialogue); setNaturalMovement(saved.naturalMovement); setClothingPolicy(saved.clothingPolicy); setSigmaShiftMode(saved.sigmaShiftMode); setShiftVideo(saved.shiftVideo); setShiftAudio(saved.shiftAudio); setLoraStrength(saved.loraStrength); setUserLoras(Array.isArray(saved.userLoras) ? saved.userLoras : workspaceDefaults.userLoras); setSeed(saved.seed); setSeedLocked(saved.seedLocked); setAdvanced(saved.advanced); setLiveEnabled(saved.liveEnabled); setLivePreviewMode(saved.livePreviewMode); setUpscaleMode(saved.upscaleMode); setTextEncoderPreference(saved.textEncoderPreference); setTurbo8Profile(saved.turbo8Profile); setRtxModel(saved.rtxModel); setFirstFrame(saved.firstFrame); setLastFrame(saved.lastFrame); setReferenceImages(saved.referenceImages); setReferenceVideos(saved.referenceVideos); setReferenceAudios(saved.referenceAudios); setSelectedReferenceCharacterIds(saved.selectedReferenceCharacterIds); setSelectedReferenceLocationIds(saved.selectedReferenceLocationIds); setActiveJobId(null); setView('create'); setCreateResetKey((value) => value + 1)
     } else {
-      const storageKey = project.scope === 'ltx25' ? 'ltx25.workspace' : project.scope === 'zimage' ? 'minimax.zimage-workspace' : 'acestep.workspace'
+      const storageKey = project.scope === 'ltx25' ? 'ltx25.workspace' : project.scope === 'zimage' ? 'minimax.zimage-workspace' : project.scope === 'anime' ? 'anime.workspace' : 'acestep.workspace'
       localStorage.setItem(storageKey, JSON.stringify(project.snapshot))
       if (project.scope === 'ltx25') { setLtxResetAt(Date.now()); setLtxResetKey((value) => value + 1) }
       if (project.scope === 'zimage') setZImageResetKey((value) => value + 1)
+      if (project.scope === 'anime') setAnimeResetKey((value) => value + 1)
       if (project.scope === 'music') setAceResetKey((value) => value + 1)
       setView(project.scope)
     }
@@ -1380,6 +1384,12 @@ function App() {
       localStorage.removeItem('minimax.zimage-workspace')
       setZImageResetKey((value) => value + 1)
       setNotice({ tone: 'success', text: 'Create Image reset. Its prompt, options, selection, and current preview were cleared.' })
+      return
+    }
+    if (view === 'anime') {
+      localStorage.removeItem('anime.workspace')
+      setAnimeResetKey((value) => value + 1)
+      setNotice({ tone: 'success', text: 'Anime & Checkpoint reset. Its prompt, options, selection, and current preview were cleared.' })
     }
   }
 
@@ -1864,7 +1874,7 @@ function App() {
         <div className="titlebar-brand"><span className="brand-mark"><Film size={18} /></span><span><strong>Oyama AI Video Studio</strong><small>Create&nbsp;&nbsp;•&nbsp;&nbsp;Visualize&nbsp;&nbsp;•&nbsp;&nbsp;Tell Stories</small></span></div>
         <button className="titlebar-search" type="button" onClick={() => setView('library')} title="Search generated media in Library"><Search size={15} /><span>Search assets, projects, or prompts…</span><kbd>Library</kbd></button>
         <div className="titlebar-drag" />
-        {(view === 'create' || view === 'ltx25' || view === 'zimage') && <button className="titlebar-action titlebar-reset" onClick={resetCurrentWorkspace} title="Reset prompts, options, media, selections, and the current preview in this workspace"><RotateCcw size={14} />Reset workspace</button>}
+        {(view === 'create' || view === 'ltx25' || view === 'zimage' || view === 'anime') && <button className="titlebar-action titlebar-reset" onClick={resetCurrentWorkspace} title="Reset prompts, options, media, selections, and the current preview in this workspace"><RotateCcw size={14} />Reset workspace</button>}
         {workspaceProjectScope(view) && <button className="titlebar-action titlebar-projects" onClick={() => setProjectManagerOpen(true)} title="Save, open, and manage full workspace projects"><FolderOpen size={14} /><span>Project: Current workspace</span><ChevronDown size={13} /></button>}
         <button className="titlebar-action titlebar-help" onClick={() => setHelpOpen(true)} title="Show tips for this workspace" aria-label="Show workspace tips"><HelpCircle size={15} />Tips</button>
         <button className="titlebar-action" onClick={() => { setLanOpen(true); void window.minimax.getLanStatus().then(setLanStatus) }} title="Share Oyama AI Video Studio over your local network"><QrCode size={14} />LAN</button>
@@ -1882,6 +1892,7 @@ function App() {
           <div className="nav-group"><span className="nav-section-label">Create</span>
             <NavButton active={view === 'create'} icon={WandSparkles} label="Video" onClick={() => { setCharacterHandoff(null); setView('create') }} />
             <NavButton active={view === 'zimage'} icon={ImageIcon} label="Image" onClick={() => setView('zimage')} />
+            <NavButton active={view === 'anime'} icon={Palette} label="Anime" onClick={() => setView('anime')} />
             <NavButton active={view === 'ltx25'} icon={Aperture} label="LTX 2.5" onClick={() => setView('ltx25')} />
             <NavButton active={view === 'music'} icon={Music2} label="Music" onClick={() => setView('music')} />
           </div>
@@ -2059,6 +2070,9 @@ function App() {
         <div hidden={view !== 'zimage'}><ZImageWorkspace key={`first-frame-${zImageResetKey}`} url={settings.comfyUrl} info={info} connected={status.connected} ollamaAvailable={ollamaModels.length > 0} llmProvider={llmConnection.provider} ollamaUrl={llmConnection.url} ollamaModel={llmConnection.model} outputDirectory={settings.outputDirectory} attentionBackend={resolvedH3AttentionBackend} onUse={(file, frameResolution) => {
           setFirstFrame(file); setResolution(frameResolution); setMode('image'); setActiveJobId(null); setView('create'); setNotice({ tone: 'success', text: 'Z-Image frame loaded into the MiniMax I2V workspace.' })
         }} onUseLtx={(file) => void sendGeneratedStillToLtx(file)} /></div>
+        <div hidden={view !== 'anime'}><AnimeWorkspace key={`anime-${animeResetKey}`} url={settings.comfyUrl} info={info} connected={status.connected} ollamaAvailable={ollamaModels.length > 0} llmProvider={llmConnection.provider} ollamaUrl={llmConnection.url} ollamaModel={llmConnection.model} outputDirectory={settings.outputDirectory} onUse={(file, frameResolution) => {
+          setFirstFrame(file); setResolution(frameResolution); setMode('image'); setActiveJobId(null); setView('create'); setNotice({ tone: 'success', text: 'Anime frame loaded into the MiniMax I2V workspace.' })
+        }} onUseLtx={(file) => void sendGeneratedStillToLtx(file)} /></div>
         {view === 'characters' && <CharacterStudio settings={settings} info={info} connected={status.connected} ollamaAvailable={ollamaModels.length > 0} automationJobs={jobs.filter((job) => job.characterProjectId)} onCopilotContext={setCharacterCopilotContext} onNotice={(tone, text) => setNotice({ tone, text })} onCreateTurntable={(project) => {
           if (!project.baseImage) return Promise.resolve('Approve a character identity image before rendering the survey.')
           const firstFrame = fitWholeCharacter(project.baseImage)
@@ -2182,8 +2196,8 @@ function WorkspaceProjectManager({ activeScope, projects, onClose, onSave, onLoa
     <section className="workspace-project-modal" role="dialog" aria-modal="true" aria-labelledby="workspace-project-title">
       <header><div><FolderOpen size={20} /><span><strong id="workspace-project-title">Workspace projects</strong><small>Full local snapshots of prompts, controls, and selected reference files.</small></span></div><button className="icon-button" onClick={onClose} aria-label="Close projects"><X size={18} /></button></header>
       <div className="workspace-project-body">
-        {activeScope ? <form className="workspace-project-save" onSubmit={(event) => { event.preventDefault(); onSave(name, activeScope); setName('') }}><span><strong>Save current {workspaceProjectLabel(activeScope)} workspace</strong><small>Includes the full prompt, render selections, and reference assignments. Files remain in their original local locations.</small></span><label><span>Project name</span><input autoFocus value={name} maxLength={80} onChange={(event) => setName(event.target.value)} placeholder="e.g. Kitchen dialogue v1" /></label><button className="primary-button" type="submit" disabled={!name.trim()}><Save size={15} />Save project</button></form> : <p className="settings-note">Open Create, LTX 2.5, Create Image, or Music to save that workspace as a project. You can still open any saved project below.</p>}
-        <div className="workspace-project-toolbar"><span><strong>Saved projects</strong><small>{projects.length} local project{projects.length === 1 ? '' : 's'}</small></span><label><span>Show</span><select value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)}><option value="all">All workspaces</option><option value="create">MiniMax H3 / Ref2VA</option><option value="ltx25">LTX 2.5</option><option value="zimage">Create Image</option><option value="music">Music</option></select></label></div>
+        {activeScope ? <form className="workspace-project-save" onSubmit={(event) => { event.preventDefault(); onSave(name, activeScope); setName('') }}><span><strong>Save current {workspaceProjectLabel(activeScope)} workspace</strong><small>Includes the full prompt, render selections, and reference assignments. Files remain in their original local locations.</small></span><label><span>Project name</span><input autoFocus value={name} maxLength={80} onChange={(event) => setName(event.target.value)} placeholder="e.g. Kitchen dialogue v1" /></label><button className="primary-button" type="submit" disabled={!name.trim()}><Save size={15} />Save project</button></form> : <p className="settings-note">Open Create, LTX 2.5, Create Image, Anime, or Music to save that workspace as a project. You can still open any saved project below.</p>}
+        <div className="workspace-project-toolbar"><span><strong>Saved projects</strong><small>{projects.length} local project{projects.length === 1 ? '' : 's'}</small></span><label><span>Show</span><select value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)}><option value="all">All workspaces</option><option value="create">MiniMax H3 / Ref2VA</option><option value="ltx25">LTX 2.5</option><option value="zimage">Create Image</option><option value="anime">Anime & Checkpoint</option><option value="music">Music</option></select></label></div>
         {visibleProjects.length ? <div className="workspace-project-list">{visibleProjects.map((project) => <article key={project.id}><div><span className="workspace-project-scope">{workspaceProjectLabel(project.scope)}</span><strong>{project.name}</strong><small>{details(project)}</small><small>Updated {new Date(project.updatedAt).toLocaleString()}</small></div><div><button type="button" className="secondary-button" onClick={() => onLoad(project)}>Open</button><button type="button" className="icon-button" aria-label={`Rename ${project.name}`} onClick={() => onRename(project)}><Pencil size={15} /></button><button type="button" className="icon-button danger-icon" aria-label={`Delete ${project.name}`} onClick={() => { if (window.confirm(`Delete project “${project.name}”? This does not delete any source files.`)) onDelete(project) }}><Trash2 size={15} /></button></div></article>)}</div> : <div className="workspace-project-empty"><FolderOpen size={26} /><strong>No projects here yet</strong><span>Save the active workspace to capture its prompt, settings, and references.</span></div>}
       </div>
       <footer><small>Projects are stored locally in Oyama AI Video Studio. Opening a project never changes its source images, videos, audio, or library assets.</small><button className="secondary-button" onClick={onClose}>Done</button></footer>
@@ -2691,6 +2705,7 @@ const workspaceTips: Record<View, { title: string; description: string; tips: Ar
   ltx25: { title: 'LTX 2.5', description: 'Animate text or a first frame with native LTX video and audio.', tips: [['Image mode', 'The first frame is the visual authority. Start the prompt with the intended motion, then keep camera movement restrained and continuous.'], ['Identity', 'When a still is handed off from image generation, an identity-preserving starter prompt is inserted automatically. Review and edit it before rendering.'], ['Quality presets', 'Quality uses the official two-stage 8 + 3 workflow. Turbo uses the distilled single-stage schedule for faster previews.'], ['Audio', 'LTX creates synchronized audio. Keep No dialogue enabled for natural ambience without speech, narration, singing, captions, or lip-sync.']] },
   music: { title: 'Music · ACE-Step', description: 'Create a local soundtrack or sound bed for your project.', tips: [['Tags', 'Describe genre, tempo, instrumentation, mood, and structure. Short, concrete tags usually produce more controllable results.'], ['Duration', 'Match the music length to the intended edit, then trim or assemble clips in Clip editor.'], ['Iteration', 'Change one or two tags at a time so you can tell which direction improved the result.']] },
   zimage: { title: 'Create Image · Z-Image', description: 'Generate a high-resolution still for a reference or opening frame.', tips: [['Prompt', 'Describe subject, expression, composition, lens, lighting, environment, and texture. Keep the image prompt still-focused—do not describe motion or sound.'], ['Eyes', 'For people, say “eyes naturally open, relaxed eyelids, clear irises and pupils, believable attentive gaze.” Avoid “wide-eyed,” which can create an unnatural stare.'], ['Model choice', 'Turbo is fast for exploration. Original Z-Image offers more steps and stronger prompt control for final stills.'], ['Next step', 'Use MiniMax I2V for H3 animation or Send to LTX 2.5 for the identity-preserving LTX starter prompt.']] },
+  anime: { title: 'Anime & Checkpoint', description: 'Generate stills with any single-file SD1.5/SDXL checkpoint installed in ComfyUI.', tips: [['Checkpoint', 'Install any anime or general checkpoint in ComfyUI’s models/checkpoints folder, then rescan or reopen this workspace to see it in the list.'], ['Tags', 'Most anime checkpoints respond well to booru-style comma-separated tags for character, pose, outfit, and background.'], ['CLIP skip', 'SD1.5 anime checkpoints often want CLIP skip 2; SDXL-family checkpoints usually want CLIP skip 1.'], ['Next step', 'Use MiniMax I2V for H3 animation or Send to LTX 2.5 for the identity-preserving LTX starter prompt.']] },
   characters: { title: 'Characters', description: 'Build approved identities that can be reused across shots.', tips: [['Master image', 'Choose a neutral, well-lit image with the entire face visible. This becomes the visual identity anchor.'], ['References', 'Add focused detail views only when they clarify hair, wardrobe, accessories, or distinguishing features.'], ['Turntable', 'Use the identity survey to check facial geometry, body proportions, clothing, and profile continuity before using the character in a movie.']] },
   hair: { title: 'Hair', description: 'Save repeatable hairstyles for character continuity.', tips: [['Describe the cut', 'Include length, shape, texture, parting, fringe, volume, and finish.'], ['Reference', 'Use a clear image with the hairline and silhouette visible; avoid busy backgrounds.'], ['Reuse', 'Approved styles can be attached to characters and carried into later reference renders.']] },
   wardrobes: { title: 'Wardrobe', description: 'Create clothing references without losing material and fit details.', tips: [['Describe materials', 'Name fabric, weave, sheen, weight, closures, colors, and layers.'], ['Keep it grounded', 'Specify how the garment fits and moves instead of relying on broad fashion adjectives.'], ['Continuity', 'Attach approved wardrobe references to a character when the same outfit must persist across shots.']] },
