@@ -115,6 +115,14 @@ export function AnimeWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [installedClips.join('|')])
 
+  // buildAnima() (the only consumer of clipName) expects the small Qwen3-0.6B
+  // text encoder — Anima and its CapPixel/hakushi-mix merges share that hidden
+  // size. Any other CLIP (e.g. MiniMax H3's 32B Qwen3-VL encoder) is a hard
+  // KSampler crash (mismatched conditioning tensor shape). Warn instead of
+  // silently overriding a deliberate choice — someone may be testing a
+  // different encoder on purpose.
+  const clipLikelyIncompatible = Boolean(clipName) && !/qwen_3_06b|qwen_3_600m|qwen3_06b/i.test(clipName)
+
   useEffect(() => {
     if (!vaeName && installedVaes.length) setVaeName(installedVaes.find((name) => /qwen_image_vae/i.test(name)) ?? installedVaes[0])
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -244,7 +252,9 @@ export function AnimeWorkspace({
             {!installedClips.length && <option value="">No text encoders found in models/text_encoders</option>}
             {clipName && !installedClips.includes(clipName) && <option value={clipName}>{clipName} · unavailable</option>}
             {installedClips.map((name) => <option key={name} value={name}>{name}</option>)}
-          </select></label>
+          </select>
+          {clipLikelyIncompatible && <p className="field-help upscale-warning">Anima expects the small Qwen3‑0.6B text encoder (qwen_3_06b…). This one is a different size and will likely crash the sampler with a tensor shape mismatch.</p>}
+          </label>
           <label>VAE<select value={vaeName} disabled={busy} onChange={(event) => setVaeName(event.target.value)}>
             {!installedVaes.length && <option value="">No VAEs found in models/vae</option>}
             {vaeName && !installedVaes.includes(vaeName) && <option value={vaeName}>{vaeName} · unavailable</option>}
