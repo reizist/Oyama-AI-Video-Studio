@@ -764,19 +764,19 @@ function App() {
   const pendingKey = pendingJobs.map((job) => job.id).join(',')
   const jobsRef = useRef(jobs)
   jobsRef.current = jobs
-  const deleteGeneration = async (job: GenerationJob, trashFile: boolean) => {
+  const deleteGeneration = async (job: GenerationJob, mode: 'history' | 'trash' | 'permanent') => {
     const current = jobsRef.current.find((item) => item.id === job.id)
     if (!current) return
     if (['queued', 'running'].includes(current.status)) throw new Error('Stop the generation before deleting its history.')
-    let result: 'trashed' | 'missing' | undefined
-    if (trashFile) {
+    let result: 'trashed' | 'deleted' | 'missing' | undefined
+    if (mode !== 'history') {
       const source = current.localOutputPath || current.outputUrl
       if (!source) throw new Error('No output file is recorded. Choose history-only deletion.')
-      result = await window.minimax.trashOutput(source)
+      result = await window.minimax.trashOutput(source, mode)
     }
     setJobs((items) => items.filter((item) => item.id !== job.id))
     setActiveJobId((id) => id === job.id ? null : id)
-    setNotice({ tone: 'success', text: result === 'trashed' ? 'Generation removed from Library and Queue. Output file moved to Trash.' : result === 'missing' ? 'The output file was already missing. Generation history removed.' : 'Generation removed from Library and Queue. Output file kept.' })
+    setNotice({ tone: 'success', text: result === 'deleted' ? 'Generation removed from Library and Queue. Output file permanently deleted.' : result === 'trashed' ? 'Generation removed from Library and Queue. Output file moved to Trash.' : result === 'missing' ? 'The output file was already missing. Generation history removed.' : 'Generation removed from Library and Queue. Output file kept.' })
   }
   const selectActiveJob = useCallback((nextJobId: string) => {
     setActiveJobId((currentId) => {
@@ -2839,7 +2839,7 @@ function JobExecutionChips({ job, expanded = false }: { job: GenerationJob; expa
   return chips.length ? <div className={`job-execution-chips ${expanded ? 'expanded' : ''}`} aria-label="Render configuration">{chips.map((chip) => <span key={`${chip.label}-${chip.detail ?? ''}`} className={chip.emphasis ? 'accelerated' : ''} title={chip.detail ?? chip.label}>{chip.label}</span>)}</div> : null
 }
 
-function LibraryView({ jobs, settings, onEdit, onUseLtx, onNotice, onDelete }: { onDelete(job: GenerationJob, trashFile: boolean): Promise<void>; jobs: GenerationJob[]; settings: AppSettings; onEdit(): void; onUseLtx(file: MediaFile): void; onNotice(tone: 'error' | 'success' | 'neutral', text: string): void }) {
+function LibraryView({ jobs, settings, onEdit, onUseLtx, onNotice, onDelete }: { onDelete(job: GenerationJob, mode: 'history' | 'trash' | 'permanent'): Promise<void>; jobs: GenerationJob[]; settings: AppSettings; onEdit(): void; onUseLtx(file: MediaFile): void; onNotice(tone: 'error' | 'success' | 'neutral', text: string): void }) {
   const [query, setQuery] = useState('')
   const [provider, setProvider] = useState<'all' | 'minimax' | 'ltx25'>('all')
   const [sort, setSort] = useState<'newest' | 'oldest'>('newest')
@@ -2876,7 +2876,7 @@ function LibraryView({ jobs, settings, onEdit, onUseLtx, onNotice, onDelete }: {
   </div>
 }
 
-function JobsView({ title, note, jobs, empty, cancellingIds, onCancel, onDelete }: { onDelete(job: GenerationJob, trashFile: boolean): Promise<void>; title: string; note: string; jobs: GenerationJob[]; empty: string; cancellingIds: Set<string>; onCancel(job: GenerationJob): Promise<void> }) {
+function JobsView({ title, note, jobs, empty, cancellingIds, onCancel, onDelete }: { onDelete(job: GenerationJob, mode: 'history' | 'trash' | 'permanent'): Promise<void>; title: string; note: string; jobs: GenerationJob[]; empty: string; cancellingIds: Set<string>; onCancel(job: GenerationJob): Promise<void> }) {
   return <div className="standard-page"><div className="page-heading"><div><p className="eyebrow">LOCAL WORKSPACE</p><h1>{title}</h1><p>{note}</p></div></div>{jobs.length === 0 ? <div className="empty-page"><History size={28} /><strong>{empty}</strong><span>New work is saved automatically on this device.</span></div> : <div className="job-list">{jobs.map((job) => { const audio = job.mediaType === 'audio'; const image = job.mediaType === 'image'; return <article className={`job-row ${['running', 'queued'].includes(job.status) ? 'constructing' : ''}`} key={job.id}><div className={`job-thumbnail ${audio ? 'audio' : ''}`}>{job.outputUrl ? audio ? <Music2 /> : image ? <img src={job.outputUrl} alt="Generated reference still" /> : <video src={job.outputUrl} muted /> : job.status === 'running' ? <LoaderCircle className="spin" /> : audio ? <Music2 /> : image ? <ImageIcon /> : <Film />}</div><div className="job-copy"><div><StatusBadge status={job.status} /><span>{new Date(job.createdAt).toLocaleString()}</span></div><strong>{shortPrompt(job.prompt)}</strong><small>{audio ? `ACE-Step · ${job.duration}s · audio` : `${job.width} × ${job.height} · ${image ? 'Ref2VA still' : `${job.duration}s · ${job.mode}`}`}</small><JobExecutionChips job={job} />{job.outputUrl && audio && <audio className="job-audio" src={job.outputUrl} controls preload="metadata" />}{['running', 'queued'].includes(job.status) && <><small className="job-progress-label">{job.progressLabel ?? (job.status === 'queued' ? 'Waiting in queue' : audio ? 'Generating music locally' : image ? 'Generating one reference still' : 'Rendering locally')}{job.queuePosition ? ` · position ${job.queuePosition}` : ''}{job.currentStep !== undefined && job.totalSteps ? ` · ${job.currentStep}/${job.totalSteps}` : ''}</small><div className="progress compact"><i style={{ width: `${job.progress}%` }} /></div></>}{job.error && <p className="job-error">{job.error}</p>}</div><div className="job-actions"><DeleteGenerationButton job={job} onDelete={onDelete} />{job.outputUrl && <a className="secondary-button" href={job.outputUrl} target="_blank" rel="noreferrer"><ExternalLink size={15} />Open</a>}{['running', 'queued'].includes(job.status) && <button className="danger-button" disabled={cancellingIds.has(job.id)} onClick={() => void onCancel(job)}>{cancellingIds.has(job.id) ? <LoaderCircle size={15} className="spin" /> : <CircleStop size={15} />}{cancellingIds.has(job.id) ? 'Stopping…' : 'Stop'}</button>}</div></article> })}</div>}</div>
 }
 

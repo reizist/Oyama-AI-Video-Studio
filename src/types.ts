@@ -413,7 +413,7 @@ export type DesktopApi = {
   installRife(): Promise<{ installed: boolean; executable?: string; error?: string }>
   interpolateVideo(source: string, outputDirectory: string, ffmpegPath: string, mode: 'fps-2x' | 'slow-motion'): Promise<{ path: string; url: string }>
   showOutput(path: string): Promise<void>
-  trashOutput(source: string): Promise<'trashed' | 'missing'>
+  trashOutput(source: string, mode?: 'trash' | 'permanent'): Promise<'trashed' | 'deleted' | 'missing'>
   /** Absolute filesystem path, not a playback URL. */
   findLatestOutput(outputDirectory: string, since: number, kind?: 'video' | 'audio'): Promise<string | null>
   /** Absolute filesystem path, not a playback URL. */

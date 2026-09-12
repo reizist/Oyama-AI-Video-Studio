@@ -45,6 +45,13 @@ async function main() {
     assert.equal(calls.length, callCount, 'Rejected and missing files must not reach Trash')
     await assert.rejects(trashOutput(file, output, 'http://127.0.0.1:8188', async () => { throw new Error('Trash unavailable') }), /Trash unavailable/)
     assert.equal(await fs.readFile(file, 'utf8'), 'test', 'A Trash failure must never fall back to permanent deletion')
+    await assert.rejects(trashOutput(file, output, 'http://127.0.0.1:8188', trash, 'invalid'), /Unsupported deletion mode/)
+    await assert.rejects(trashOutput(path.join(root, 'outside.mp4'), output, 'http://127.0.0.1:8188', trash, 'permanent'), /configured output/)
+    await assert.rejects(trashOutput(folder, output, 'http://127.0.0.1:8188', trash, 'permanent'), /regular media file/)
+    assert.equal(await trashOutput(file, output, 'http://127.0.0.1:8188', trash, 'permanent'), 'deleted')
+    await assert.rejects(fs.stat(file), { code: 'ENOENT' })
+    assert.equal(await trashOutput(file, output, 'http://127.0.0.1:8188', trash, 'permanent'), 'missing')
+    assert.equal(calls.length, callCount, 'Permanent deletion must not use the OS Trash')
     console.log('Generated output Trash tests passed')
   } finally { await fs.rm(root, { recursive: true, force: true }) }
 }
@@ -55,38 +62,38 @@ const app = readFileSync('src/App.tsx', 'utf8')
 const start = app.indexOf('  const deleteGeneration = async')
 const end = app.indexOf('  const selectActiveJob', start)
 assert.ok(start > 0 && end > start)
-async function testHistory(status, trashFile, outputResult) {
+async function testHistory(status, mode, outputResult) {
   let jobs = [{ id: 'target', status, localOutputPath: '/output/video.mp4' }, { id: 'keep', status: 'completed' }]
   let active = 'target', calls = 0
   const context = {
     jobsRef: { current: jobs },
-    window: { minimax: { trashOutput: async () => { calls++; if (outputResult instanceof Error) throw outputResult; return outputResult } } },
+    window: { minimax: { trashOutput: async (_source, requestedMode) => { assert.equal(requestedMode, mode); calls++; if (outputResult instanceof Error) throw outputResult; return outputResult } } },
     setJobs: (update) => { jobs = update(jobs) },
     setActiveJobId: (update) => { active = update(active) },
     setNotice: () => {},
   }
   vm.createContext(context)
   vm.runInContext(ts.transpileModule(app.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText + '\nglobalThis.remove = deleteGeneration', context)
-  const error = await context.remove(jobs[0], trashFile).then(() => null, (error) => error)
+  const error = await context.remove(jobs[0], mode).then(() => null, (error) => error)
   return { jobs, active, calls, error }
 }
 async function historyTests() {
-  for (const result of ['trashed', 'missing']) {
-    const state = await testHistory('completed', true, result)
+  for (const result of ['trashed', 'deleted', 'missing']) {
+    const state = await testHistory('completed', result === 'deleted' ? 'permanent' : 'trash', result)
     assert.equal(state.error, null)
     assert.equal(state.jobs.length, 1)
     assert.equal(state.jobs[0].id, 'keep')
     assert.equal(state.active, null)
   }
-  const historyOnly = await testHistory('failed', false)
+  const historyOnly = await testHistory('failed', 'history')
   assert.equal(historyOnly.jobs.length, 1)
   assert.equal(historyOnly.calls, 0)
-  const failure = await testHistory('completed', true, new Error('Trash failed'))
+  const failure = await testHistory('completed', 'permanent', new Error('Trash failed'))
   assert.equal(failure.jobs.length, 2)
   assert.equal(failure.active, 'target')
   assert.match(failure.error.message, /Trash failed/)
   for (const status of ['running', 'queued']) {
-    const state = await testHistory(status, true, 'trashed')
+    const state = await testHistory(status, 'permanent', 'deleted')
     assert.equal(state.jobs.length, 2)
     assert.equal(state.calls, 0)
     assert.match(state.error.message, /Stop the generation/)

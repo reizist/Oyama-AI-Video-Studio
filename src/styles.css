@@ -3588,3 +3588,5 @@ select option { background: #0b1a2c; color: #eef7ff; }
 .delete-generation-dialog .delete-generation-prompt { max-height: 100px; overflow: auto; overflow-wrap: anywhere; opacity: .75; }
 .delete-generation-dialog label { display: flex; align-items: center; gap: 10px; font-size: 13px; }
 .delete-generation-dialog footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.delete-generation-dialog label { flex-wrap: wrap; }
+.delete-generation-dialog select { width: 100%; min-width: 0; padding: 8px; }

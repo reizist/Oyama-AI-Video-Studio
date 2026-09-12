@@ -1,8 +1,9 @@
-import { lstat, realpath } from 'node:fs/promises'
+import { lstat, realpath, unlink } from 'node:fs/promises'
 import { extname, isAbsolute, relative, resolve } from 'node:path'
 
-/** Trash only an exact, local generated media file inside the configured output. */
-export async function trashOutput(source: string, outputDirectory: string, comfyUrl: string, trash: (path: string) => Promise<void>): Promise<'trashed' | 'missing'> {
+/** Remove only an exact generated media file inside the configured output. */
+export async function trashOutput(source: string, outputDirectory: string, comfyUrl: string, trash: (path: string) => Promise<void>, mode: 'trash' | 'permanent' = 'trash'): Promise<'trashed' | 'deleted' | 'missing'> {
+  if (mode !== 'trash' && mode !== 'permanent') throw new Error('Unsupported deletion mode.')
   let candidate = source
   if (source.startsWith('minimax-media:')) {
     const url = new URL(source)
@@ -19,7 +20,7 @@ export async function trashOutput(source: string, outputDirectory: string, comfy
     const path = relative(root, file)
     return path !== '' && path !== '..' && !path.startsWith('../') && !path.startsWith('..\\') && !isAbsolute(path)
   }
-  if (!isAbsolute(candidate) || !inside(resolve(outputDirectory), resolve(candidate))) throw new Error('Only files inside the configured output folder can be moved to Trash. You can still remove the history only.')
+  if (!isAbsolute(candidate) || !inside(resolve(outputDirectory), resolve(candidate))) throw new Error('Only files inside the configured output folder can be deleted. You can still remove the history only.')
   if (!/\.(mp4|webm|mov|mkv|gif|png|jpe?g|webp|flac|wav|mp3|ogg|m4a|aac|opus)$/i.test(extname(candidate))) throw new Error('This is not a supported generated media file.')
   try {
     const details = await lstat(candidate)
@@ -29,6 +30,16 @@ export async function trashOutput(source: string, outputDirectory: string, comfy
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing'
     throw error
   }
-  await trash(candidate)
+  candidate = resolve(candidate)
+  if (mode === 'permanent') {
+    try { await unlink(candidate) } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing'
+      throw error
+    }
+    return 'deleted'
+  }
+  try { await trash(candidate) } catch (error) {
+    throw new Error(`Could not move the output to Trash. WSL and network folders may not support the Windows Recycle Bin. Choose permanent deletion to remove the file without Trash, or keep the file and delete history only. ${error instanceof Error ? error.message : String(error)}`)
+  }
   return 'trashed'
 }
