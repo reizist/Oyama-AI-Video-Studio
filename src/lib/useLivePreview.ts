@@ -114,7 +114,10 @@ export function useLivePreview(url: string | undefined, enabled: boolean, onProg
             })
           }
           if (msg.type === 'executed' && msg.data.output?.images?.[0]) {
-            const file = msg.data.output.images[0]
+            // Some video save nodes also report their MP4 under `images`.
+            // Keep the sampler preview instead of loading a video into <img>.
+            const file = msg.data.output.images.find((image) => /\.(png|jpe?g|webp)$/i.test(image.filename))
+            if (!file) return
             const query = new URLSearchParams({ filename: file.filename, subfolder: file.subfolder ?? '', type: file.type ?? 'temp' })
             const upstream = `${url.replace(/\/+$/, '')}/view?${query}`
             replacePreview({ promptId: msg.data.prompt_id ?? active, url: `minimax-media://comfy?url=${encodeURIComponent(upstream)}`, mime: 'image/jpeg', animated: false })

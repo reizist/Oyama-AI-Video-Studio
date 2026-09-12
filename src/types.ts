@@ -413,7 +413,9 @@ export type DesktopApi = {
   installRife(): Promise<{ installed: boolean; executable?: string; error?: string }>
   interpolateVideo(source: string, outputDirectory: string, ffmpegPath: string, mode: 'fps-2x' | 'slow-motion'): Promise<{ path: string; url: string }>
   showOutput(path: string): Promise<void>
+  /** Absolute filesystem path, not a playback URL. */
   findLatestOutput(outputDirectory: string, since: number, kind?: 'video' | 'audio'): Promise<string | null>
+  /** Absolute filesystem path, not a playback URL. */
   resolveOutput(outputDirectory: string, file: { filename: string; subfolder?: string; type?: string }): Promise<string | null>
   listOllamaModels(url: string, provider?: AppSettings['llmProvider']): Promise<OllamaModel[]>
   generateWithOllama(url: string, model: string, prompt: string, provider?: AppSettings['llmProvider']): Promise<string>

@@ -941,14 +941,13 @@ app.whenReady().then(async () => {
     return { cancelled: false, state: promptId in history ? 'finished' as const : 'unknown' as const }
   })
   ipcMain.handle('outputs:latest', async (_event, outputDirectory: string, since: number, kind: 'video' | 'audio' = 'video') => {
-    const path = await findLatestMedia(outputDirectory, since, kind)
-    return path ? `minimax-media://local?path=${encodeURIComponent(path)}` : null
+    return findLatestMedia(outputDirectory, since, kind)
   })
   ipcMain.handle('outputs:resolve', async (_event, outputDirectory: string, file: { filename?: unknown; subfolder?: unknown; type?: unknown }) => {
     const settings = await loadSettings()
     if (normalize(outputDirectory).toLowerCase() !== normalize(settings.outputDirectory).toLowerCase()) return null
-    const path = resolveComfyOutput(outputDirectory, file)
-    return path ? `minimax-media://local?path=${encodeURIComponent(path)}` : null
+    // Callers persist this as localOutputPath and pass it to file:media-url.
+    return resolveComfyOutput(outputDirectory, file)
   })
   ipcMain.handle('comfy:upload', async (_event, url: string, filePath: string, subfolder = 'minimax-desktop') => {
     const bytes = await readFile(filePath)
