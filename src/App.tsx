@@ -68,7 +68,7 @@ import { fitWholeCharacter, prepareImage } from './lib/imageCrop'
 import { inferLtx25Selections, inferSelections } from './lib/modelSelection'
 import { choices, type ObjectInfo } from './lib/comfyInfo'
 import { useLivePreview, type LivePreview, type LiveProgress } from './lib/useLivePreview'
-import { RenderSize } from './components/RenderSize'
+import { RenderSize, snapToMinimaxResolution } from './components/RenderSize'
 import { ImageCrop } from './components/ImageCrop'
 import { ZImageWorkspace } from './components/ZImageWorkspace'
 import { AnimeWorkspace } from './components/AnimeWorkspace'
@@ -2068,10 +2068,10 @@ function App() {
           onCancel={(job) => void cancelJob(job)}
         />}
         <div hidden={view !== 'zimage'}><ZImageWorkspace key={`first-frame-${zImageResetKey}`} url={settings.comfyUrl} info={info} connected={status.connected} ollamaAvailable={ollamaModels.length > 0} llmProvider={llmConnection.provider} ollamaUrl={llmConnection.url} ollamaModel={llmConnection.model} outputDirectory={settings.outputDirectory} attentionBackend={resolvedH3AttentionBackend} onUse={(file, frameResolution) => {
-          setFirstFrame(file); setResolution(frameResolution); setMode('image'); setActiveJobId(null); setView('create'); setNotice({ tone: 'success', text: 'Z-Image frame loaded into the MiniMax I2V workspace.' })
+          setFirstFrame(file); setResolution(snapToMinimaxResolution(frameResolution)); setMode('image'); setActiveJobId(null); setView('create'); setNotice({ tone: 'success', text: 'Z-Image frame loaded into the MiniMax I2V workspace.' })
         }} onUseLtx={(file) => void sendGeneratedStillToLtx(file)} /></div>
         <div hidden={view !== 'anime'}><AnimeWorkspace key={`anime-${animeResetKey}`} url={settings.comfyUrl} info={info} connected={status.connected} ollamaAvailable={ollamaModels.length > 0} llmProvider={llmConnection.provider} ollamaUrl={llmConnection.url} ollamaModel={llmConnection.model} outputDirectory={settings.outputDirectory} onUse={(file, frameResolution) => {
-          setFirstFrame(file); setResolution(frameResolution); setMode('image'); setActiveJobId(null); setView('create'); setNotice({ tone: 'success', text: 'Anime frame loaded into the MiniMax I2V workspace.' })
+          setFirstFrame(file); setResolution(snapToMinimaxResolution(frameResolution)); setMode('image'); setActiveJobId(null); setView('create'); setNotice({ tone: 'success', text: 'Anime frame loaded into the MiniMax I2V workspace.' })
         }} onUseLtx={(file) => void sendGeneratedStillToLtx(file)} /></div>
         {view === 'characters' && <CharacterStudio settings={settings} info={info} connected={status.connected} ollamaAvailable={ollamaModels.length > 0} automationJobs={jobs.filter((job) => job.characterProjectId)} onCopilotContext={setCharacterCopilotContext} onNotice={(tone, text) => setNotice({ tone, text })} onCreateTurntable={(project) => {
           if (!project.baseImage) return Promise.resolve('Approve a character identity image before rendering the survey.')

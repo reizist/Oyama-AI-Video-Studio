@@ -20,6 +20,24 @@ const imageSizes: Record<string, string[]> = {
   '9:16': ['576x1024', '768x1344', '864x1536', '1080x1920'],
 }
 
+// Z-Image/Anime canvases pick free image aspect ratios and megapixels, but
+// MiniMax H3 I2V only accepts a fixed, capped list of resolutions (see `sizes`
+// below). Handing an image canvas size to the video workspace unchanged can
+// silently exceed that cap (e.g. 1024x1024 > 1344x768's pixel budget), which
+// ComfyUI rejects at prompt-validation time before it ever reaches history or
+// the log. Snap to the nearest same-orientation MiniMax size before handoff.
+export function snapToMinimaxResolution(resolution: string): string {
+  const [w, h] = resolution.split('x').map(Number)
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return '1344x768'
+  const orientation: Orientation = w === h ? 'square' : w / h >= 2.1 ? 'ultrawide' : w > h ? 'landscape' : 'portrait'
+  const area = w * h
+  return sizes[orientation].reduce((best, option) => {
+    const [ow, oh] = option.split('x').map(Number)
+    const [bw, bh] = best.split('x').map(Number)
+    return Math.abs(ow * oh - area) < Math.abs(bw * bh - area) ? option : best
+  })
+}
+
 export function RenderSize({ value, onChange, provider = 'minimax' }: { value: string; onChange(value: string): void; provider?: 'minimax' | 'ltx25' | 'zimage' }) {
   const [w, h] = value.split('x').map(Number)
   const orientation: Orientation = w === h ? 'square' : w / h >= 2.1 ? 'ultrawide' : w > h ? 'landscape' : 'portrait'
