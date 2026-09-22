@@ -2,6 +2,7 @@
   "name": "oyama-ai-video-studio",
   "version": "1.0.0-alpha.50",
   "private": true,
+  "packageManager": "pnpm@12.4.1",
   "description": "Local-first AI video studio powered by ComfyUI",
   "author": {
     "name": "James Knox",
