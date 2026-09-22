@@ -1,0 +1,31 @@
+:root {
+  --oy-bg: #0e1419;
+  --oy-panel: #151d23;
+  --oy-panel-raised: #1a242c;
+  --oy-elevated: #202c35;
+  --oy-border: #303c46;
+  --oy-border-strong: #40515e;
+  --oy-hover: #22323e;
+  --oy-selected: #203e55;
+  --oy-text: #e9f0f6;
+  --oy-muted: #a2b1be;
+  --oy-muted-2: #7f919f;
+  --oy-accent: #249cf1;
+  --oy-accent-hover: #3bafff;
+  --oy-success: #31cb82;
+  --oy-warning: #e8ad5c;
+  --oy-danger: #ef646e;
+  --oy-focus: #63bfff;
+  --oy-space-1: 4px;
+  --oy-space-2: 8px;
+  --oy-space-3: 12px;
+  --oy-space-4: 16px;
+  --oy-space-5: 20px;
+  --oy-radius-sm: 4px;
+  --oy-radius: 6px;
+  --oy-radius-lg: 9px;
+  --oy-control-sm: 28px;
+  --oy-control: 34px;
+  --oy-control-lg: 40px;
+  --oy-shadow-popover: 0 16px 42px rgb(0 0 0 / 48%);
+}

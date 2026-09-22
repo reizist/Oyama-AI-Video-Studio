@@ -1,0 +1,179 @@
+/* Companion workspaces share Video's compact workstation chrome and surfaces.
+   Their specialized editors retain their own controls and data flow. */
+.app-shell.studio-shell-active {
+  --sidebar: 0px;
+  --bg: #0e1419;
+  --surface: #151d23;
+  --surface-1: #172129;
+  --surface-2: #1b262f;
+  --surface-3: #24323d;
+  --line: #303c46;
+  --line-strong: #40515e;
+  --text: #e9f0f6;
+  --muted: #a5b4c1;
+  --muted-2: #8496a5;
+  --accent: #51b6fa;
+  --accent-soft: #203e55;
+  grid-template: 58px minmax(0, 1fr) 28px / minmax(0, 1fr);
+  background: #0e1419;
+  color: var(--text);
+  font: 13px/1.4 Inter, 'Segoe UI', sans-serif;
+}
+.studio-shell-active > .sidebar,
+.studio-shell-active > .mobile-sidebar-backdrop { display: none !important; }
+.studio-shell-active > .titlebar {
+  grid-row: 1;
+  grid-column: 1;
+  height: 58px;
+  min-height: 58px;
+  gap: 0;
+  padding: 0;
+  overflow: visible;
+  border-bottom: 1px solid #34414c;
+  background: #101820;
+}
+.studio-shell-active > .titlebar > :not(.studio-topbar) { display: none !important; }
+.studio-topbar {
+  position: relative;
+  z-index: 50;
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  height: 58px;
+  min-width: 0;
+  background: linear-gradient(100deg, #0d1217, #141d24);
+  -webkit-app-region: drag;
+}
+.studio-topbar button, .studio-topbar .video-launcher { -webkit-app-region: no-drag; }
+.studio-topbar .video-brand { flex-basis: 166px; }
+.studio-topbar nav { display: flex; align-items: stretch; gap: 4px; min-width: 0; }
+.studio-topbar nav button {
+  min-width: 77px;
+  padding: 2px 14px 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #b2bdc8;
+  font-size: 14px;
+  cursor: pointer;
+}
+.studio-topbar nav button:hover, .studio-topbar nav button.active { color: #f3f8ff; background: linear-gradient(#1b273000, #1b2c3b); }
+.studio-topbar nav button.active { border-bottom-color: #22a7f2; }
+.studio-topbar .video-project-name { flex: 0 1 auto; }
+.studio-topbar .video-launcher { top: 54px; }
+.studio-topbar .video-launcher button[aria-current='page'] { background: #285173; color: #fff; }
+@media (max-width: 1400px) {
+  .studio-topbar .video-project-name { display: none; }
+  .studio-topbar nav button { min-width: 70px; padding-inline: 10px; }
+}
+.studio-shell-active > .main-area {
+  grid-row: 2;
+  grid-column: 1;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-gutter: auto;
+  background: #0e1419;
+}
+.studio-shell-active:not(.studio-view-settings) .legacy-migration-banner { display: none; }
+.studio-shell-active > .status-bar {
+  grid-row: 3;
+  grid-column: 1;
+  min-height: 28px;
+  gap: 8px;
+  overflow: hidden;
+  border-top: 1px solid #303c46;
+  background: #141d24;
+}
+.studio-shell-active .status-bar > * { flex-shrink: 0; }
+.studio-shell-active .status-bar-spacer { flex: 1 1 0; }
+
+/* Smaller page mastheads and flat, tightly-spaced panels match Video. */
+.studio-shell-active :is(.standard-page, .create-page) { width: 100%; max-width: none; min-height: 100%; padding: 16px 16px 24px; }
+.studio-shell-active .page-heading { align-items: center; gap: 12px; min-height: 40px; margin: 0 0 12px; padding: 0 2px 9px; border-bottom: 1px solid #303c46; }
+.studio-shell-active .page-heading::after { display: none; }
+.studio-shell-active .page-heading .eyebrow { display: none; }
+.studio-shell-active .page-heading h1 { font: 600 17px/1.25 Inter, 'Segoe UI', sans-serif; letter-spacing: -.01em; }
+.studio-shell-active .page-heading > div > p:last-child { max-width: 750px; margin-top: 3px; color: #91a3b0; font-size: 11px; line-height: 1.35; }
+.studio-shell-active .heading-state span { min-height: 28px; padding: 4px 9px; border-color: #344550; border-radius: 5px; background: #192630; font-size: 11px; }
+.studio-shell-active :is(.composer-panel, .preview-panel, .zimage-composer, .zimage-preview-panel, .ace-composer, .ace-preview-panel, .settings-section, .library-card, .job-list, .library-toolbar, .reference-prep-panel, .character-studio-grid, .movie-stage, .movie-editor-workspace, .clip-master-picker) {
+  border-color: #303c46;
+  border-radius: 8px;
+  background: #151d23;
+  box-shadow: none;
+}
+.studio-shell-active :is(.primary-button, .secondary-button, .danger-button) { border-radius: 5px; box-shadow: none; }
+.studio-shell-active .primary-button { border-color: #3da6fb; background: linear-gradient(#288ff2, #0873dc); color: #fff; }
+.studio-shell-active .secondary-button { border-color: #3b4b57; background: #1c2933; color: #d4e2ed; }
+.studio-shell-active :is(input:not([type='checkbox']):not([type='radio']):not([type='range']), textarea, select) { border-color: #40515e; border-radius: 5px; background: #121b22; color: #e9f0f6; }
+.studio-shell-active :is(button, input, textarea, select, summary):focus-visible { outline: 2px solid #51b6fa; outline-offset: 2px; }
+.studio-shell-active .field-help { color: #97a7b5; }
+
+/* Generators: a broad output monitor beside a compact authoring inspector. */
+.studio-shell-active :is(.zimage-workspace-grid, .workspace-grid.ace-workspace-grid, .ltx-workspace .workspace-grid) {
+  grid-template-columns: minmax(340px, 390px) minmax(0, 1fr);
+  align-items: stretch;
+  gap: 12px;
+}
+.studio-shell-active :is(.zimage-composer, .ace-composer) { padding: 14px; }
+.studio-shell-active .zimage-mode-picker { margin-bottom: 12px; }
+.studio-shell-active .zimage-mode-picker label { grid-template-columns: auto auto minmax(0, 1fr); gap: 6px; min-height: 36px; padding: 6px 8px; border-radius: 5px; }
+.studio-shell-active .zimage-mode-picker label.selected { border-color: #397db0; background: #203e55; box-shadow: none; }
+.studio-shell-active .zimage-mode-picker strong { font-size: 11px; white-space: nowrap; }
+.studio-shell-active .zimage-mode-picker small, .studio-shell-active .zimage-mode-picker em { display: none; }
+.studio-shell-active .zimage-composer textarea { min-height: 115px; }
+.studio-shell-active :is(.zimage-preview-stage, .ace-preview-stage) { min-height: max(420px, 62vh); background: #0e161c; }
+.studio-shell-active .zimage-preview-stage:has(.empty-preview),
+.studio-shell-active .ace-preview-stage:has(.empty-preview) { min-height: max(420px, 62vh); }
+.studio-shell-active .zimage-preview-stage > img { max-height: 70vh; }
+.studio-shell-active .zimage-generate-bar { position: sticky; bottom: 0; padding: 10px 0 0; background: #151d23; }
+
+/* Asset studios keep their project rail, but use Video's narrow, flat asset rows. */
+.studio-shell-active .character-studio-grid { grid-template-columns: 220px minmax(0, 1fr); min-height: calc(100dvh - 154px); }
+.studio-shell-active .character-project-list { border-right: 1px solid #303c46; background: #141c22; }
+.studio-shell-active .character-project-list > header { min-height: 47px; padding: 7px 10px; }
+.studio-shell-active .character-project-list > div { gap: 0; padding: 4px 7px; }
+.studio-shell-active .character-project-list > div > button { grid-template-columns: 46px minmax(0, 1fr); gap: 8px; min-height: 56px; padding: 5px; border-bottom: 1px solid #293640; border-radius: 4px; }
+.studio-shell-active .character-project-list img,
+.studio-shell-active .character-project-list > div > button > span:first-child { width: 46px; height: 46px; border-radius: 4px; }
+.studio-shell-active .character-project-list > div strong { font-size: 11px; font-weight: 500; }
+.studio-shell-active .character-project-list > div small { font-size: 10px; }
+.studio-shell-active .character-project-list header strong, .studio-shell-active .character-workbench header strong { font-size: 12px; }
+.studio-shell-active .character-project-list header small, .studio-shell-active .character-workbench header small { font-size: 10px; }
+.studio-shell-active .character-workbench { background: #151d23; }
+.studio-shell-active .character-workbench > header { min-height: 49px; padding: 7px 13px; }
+.studio-shell-active :is(.character-setup-panel, .character-master-card, .character-reference-set) { border-color: #303c46; border-radius: 6px; background: #19232b; box-shadow: none; }
+
+/* Reference prep, queues, libraries, settings and editors share the same rails. */
+.studio-shell-active .reference-prep-studio { max-width: none; }
+.studio-shell-active .reference-prep-grid { gap: 12px; }
+.studio-shell-active .reference-prep-panel { min-height: 460px; }
+.studio-shell-active .reference-prep-panel > header, .studio-shell-active .reference-prep-panel > footer { padding: 9px 12px; }
+.studio-shell-active .settings-layout { grid-template-columns: 220px minmax(0, 1fr); gap: 12px; }
+.studio-shell-active .settings-sidebar { top: 12px; border: 1px solid #303c46; border-radius: 8px; background: #151d23; }
+.studio-shell-active .settings-section { margin-bottom: 10px; }
+.studio-shell-active .library-grid { gap: 10px; }
+.studio-shell-active .job-list { overflow: hidden; }
+.studio-shell-active .movie-page { max-width: none; }
+.studio-shell-active .movie-editor-workspace { grid-template-columns: 220px minmax(0, 1fr) 320px; min-height: 56vh; }
+.studio-shell-active .clip-master-workspace { height: auto; min-height: calc(100dvh - 120px); padding: 12px; }
+.studio-shell-active .clip-workspace-heading h1 { font-size: 17px; }
+
+@media (max-width: 1180px) {
+  .studio-topbar .video-project-name { display: none; }
+  .studio-topbar .video-pipeline-state { padding-inline: 12px; }
+  .studio-shell-active .movie-editor-workspace { grid-template-columns: 190px minmax(0, 1fr) 270px; }
+}
+@media (max-width: 950px) {
+  .studio-topbar .video-brand { flex-basis: 132px; padding-left: 12px; }
+  .studio-topbar nav button { min-width: 59px; padding-inline: 6px; font-size: 12px; }
+  .studio-topbar .video-pipeline-state { display: none; }
+  .studio-shell-active :is(.zimage-workspace-grid, .workspace-grid.ace-workspace-grid, .ltx-workspace .workspace-grid) { grid-template-columns: minmax(300px, 360px) minmax(0, 1fr); }
+  .studio-shell-active .movie-editor-workspace { grid-template-columns: 170px minmax(0, 1fr) 220px; }
+}
+@media (max-width: 740px) {
+  .studio-topbar nav button:nth-child(n+4), .studio-topbar .video-mode-settings { display: none; }
+  .studio-topbar .video-window-gutter { width: 80px; flex-basis: 80px; }
+  .studio-shell-active :is(.zimage-workspace-grid, .workspace-grid.ace-workspace-grid, .ltx-workspace .workspace-grid, .reference-prep-grid, .character-studio-grid, .settings-layout) { grid-template-columns: minmax(0, 1fr); }
+  .studio-shell-active .character-project-list { max-height: 230px; border-right: 0; border-bottom: 1px solid #303c46; }
+  .studio-shell-active .movie-editor-workspace { display: block; }
+}

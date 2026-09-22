@@ -3,6 +3,7 @@ import { Check, CircleStop, Download, Film, Image as ImageIcon, Images, LayoutGr
 import { ImageCrop } from './components/ImageCrop'
 import { RenderSize } from './components/RenderSize'
 import { RenderConstruction } from './components/RenderConstruction'
+import { ReliableVideo } from './components/ReliableVideo'
 import { prepareImage } from './lib/imageCrop'
 import { inferLtx25Selections, inferSelections } from './lib/modelSelection'
 import { buildMiniMaxWorkflow } from './lib/workflow'
@@ -14,7 +15,7 @@ import type { MediaFile, ModelFile } from './types'
 
 type Bootstrap = { connected: boolean; latencyMs: number; models: ModelFile[]; upscalers?: string[]; ltxModel?: string; ltxVae?: string; ltxUpscaleReady?: boolean; ltxUpscaleMissing?: string[]; ltxNativeReady?: boolean; ltxNativeMissing?: string[]; ollamaModels?: string[]; ollamaModel?: string; llmProvider?: 'ollama' | 'lmstudio'; llmModels?: string[]; llmModel?: string; error?: string }
 type MobileStatus = 'ready' | 'uploading' | 'queued' | 'rendering' | 'complete' | 'error'
-type MobileUpscale = 'off' | 'ltx' | 'rtx'
+type MobileUpscale = 'off' | 'refine' | 'ltx' | 'rtx'
 type MobileProvider = 'minimax' | 'ltx25'
 type InstallPrompt = Event & { prompt(): Promise<void>; userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }> }
 type MobileView = 'video' | 'image' | 'characters'
@@ -23,7 +24,7 @@ type MobileCharacter = { id: string; name: string; description: string; wardrobe
 type MobileMode = 'text' | 'image' | 'reference'
 type MobileReference = MediaFile & { source?: File }
 type ClothingPolicy = 'assigned' | 'underwear' | 'unrestricted'
-type StoredMobileWorkspace = Partial<{ mode: MobileMode; prompt: string; noDialogue: boolean; resolution: string; duration: number; quality: 'quality' | 'turbo'; upscale: MobileUpscale; rtxModel: string; clothingPolicy: ClothingPolicy; refImageSize: 'match' | 'max' }>
+type StoredMobileWorkspace = Partial<{ mode: MobileMode; prompt: string; noDialogue: boolean; resolution: string; duration: number; quality: 'quality' | 'turbo'; upscale: MobileUpscale; refineSteps: number; refineDenoise: number; rtxModel: string; clothingPolicy: ClothingPolicy; refImageSize: 'match' | 'max' }>
 
 function readMobileWorkspace(provider: MobileProvider = 'minimax') {
   try { return JSON.parse(localStorage.getItem(provider === 'ltx25' ? 'ltx25.mobile-workspace' : 'minimax.mobile-workspace') ?? '{}') as StoredMobileWorkspace }
@@ -69,7 +70,9 @@ export default function MobileApp() {
   const [resolution, setResolution] = useState(stored.resolution ?? '768x448')
   const [duration, setDuration] = useState(stored.duration ?? 5)
   const [quality, setQuality] = useState<'quality' | 'turbo'>(stored.quality ?? 'turbo')
-  const [upscale, setUpscale] = useState<MobileUpscale>(stored.upscale ?? 'off')
+  const [upscale, setUpscale] = useState<MobileUpscale>(stored.upscale ?? 'refine')
+  const [refineSteps, setRefineSteps] = useState(Math.max(1, Math.min(30, Math.round(Number(stored.refineSteps) || 3))))
+  const [refineDenoise, setRefineDenoise] = useState(Number.isFinite(Number(stored.refineDenoise)) ? Math.max(0.01, Math.min(1, Number(stored.refineDenoise))) : 0.3)
   const [rtxModel, setRtxModel] = useState(stored.rtxModel ?? '')
   const [status, setStatus] = useState<MobileStatus>('ready')
   const [message, setMessage] = useState('')
@@ -110,9 +113,9 @@ export default function MobileApp() {
   }, [bootstrap?.upscalers, rtxModel])
 
   useEffect(() => {
-    localStorage.setItem(provider === 'ltx25' ? 'ltx25.mobile-workspace' : 'minimax.mobile-workspace', JSON.stringify({ mode, prompt, noDialogue, resolution, duration, quality, upscale, rtxModel, clothingPolicy, refImageSize }))
+    localStorage.setItem(provider === 'ltx25' ? 'ltx25.mobile-workspace' : 'minimax.mobile-workspace', JSON.stringify({ mode, prompt, noDialogue, resolution, duration, quality, upscale, refineSteps, refineDenoise, rtxModel, clothingPolicy, refImageSize }))
     localStorage.setItem('mobile.active-provider', provider)
-  }, [clothingPolicy, duration, mode, noDialogue, prompt, provider, quality, refImageSize, resolution, rtxModel, upscale])
+  }, [clothingPolicy, duration, mode, noDialogue, prompt, provider, quality, refImageSize, refineSteps, refineDenoise, resolution, rtxModel, upscale])
 
   const changeProvider = (next: MobileProvider) => {
     if (next === provider || ['uploading', 'queued', 'rendering'].includes(status)) return
@@ -124,7 +127,9 @@ export default function MobileApp() {
     setResolution(nextWorkspace.resolution ?? '1056x608')
     setDuration(nextWorkspace.duration ?? 5)
     setQuality(nextWorkspace.quality ?? (next === 'ltx25' ? 'quality' : 'turbo'))
-    setUpscale(next === 'ltx25' ? 'off' : nextWorkspace.upscale ?? 'off')
+    setUpscale(next === 'ltx25' ? 'off' : nextWorkspace.upscale ?? 'refine')
+    setRefineSteps(Math.max(1, Math.min(30, Math.round(Number(nextWorkspace.refineSteps) || 3))))
+    setRefineDenoise(Number.isFinite(Number(nextWorkspace.refineDenoise)) ? Math.max(0.01, Math.min(1, Number(nextWorkspace.refineDenoise))) : 0.3)
     setClothingPolicy(nextWorkspace.clothingPolicy ?? 'assigned'); setRefImageSize(nextWorkspace.refImageSize ?? 'match')
     setOutputUrl(''); setLivePreview(''); setProgress(0); setProgressLabel('Ready'); setPromptId(''); setMessage(''); setStatus('ready')
   }
@@ -245,19 +250,25 @@ export default function MobileApp() {
   const openPreviewStream = (clientId: string) => {
     if (token === 'browser-preview') return { source: null, ready: Promise.resolve() }
     const source = new EventSource(`/api/lan/events?${new URLSearchParams({ token, clientId })}`)
+    let samplerStage = ''
     let markReady: () => void = () => undefined
     const ready = new Promise<void>((resolve) => { markReady = resolve })
     source.onmessage = (event) => {
       try {
         const update = JSON.parse(event.data) as { type?: string; data?: { node?: string | null; value?: number; max?: number; image?: string; output?: { images?: Array<{ filename: string; subfolder?: string; type?: string }> } } }
         if (update.type === 'stream_ready') markReady()
-        if (update.type === 'execution_start') { setProgress(1); setProgressLabel('Starting workflow') }
+        if (update.type === 'execution_start') { samplerStage = ''; setProgress((current) => Math.max(current, 1)); setProgressLabel('Starting workflow') }
         if (update.type === 'execution_cached') setProgressLabel('Reusing cached model data')
-        if (update.type === 'executing' && update.data?.node) setProgressLabel('Loading or processing workflow stage')
+        if (update.type === 'executing' && update.data?.node) {
+          if (update.data.node === '15') samplerStage = 'First sampling pass'
+          else if (update.data.node === '111') samplerStage = 'Refinement pass'
+          setProgressLabel(samplerStage && (update.data.node === '15' || update.data.node === '111') ? samplerStage : 'Loading or processing workflow stage')
+        }
         if (update.type === 'progress' && update.data?.max) {
           const step = update.data.value ?? 0
-          setProgress(Math.min(95, Math.round((step / update.data.max) * 95)))
-          setProgressLabel(`Sampling · step ${step} of ${update.data.max}`)
+          const total = update.data.max
+          setProgress((current) => Math.max(current, Math.min(95, Math.round((step / total) * 95))))
+          setProgressLabel(`${samplerStage || 'Sampling'} · step ${step} of ${total}`)
         }
         if (update.type === 'execution_success') { setProgress(98); setProgressLabel('Finalizing saved output') }
         if (update.type === 'preview' && update.data?.image) setLivePreview(update.data.image)
@@ -288,7 +299,7 @@ export default function MobileApp() {
       const first = mode === 'image' && frame ? await lanFetch<{ name: string; subfolder?: string; type?: string }>('/api/lan/upload', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ data: await prepareImage(frame, width, height) }) }) : undefined
       const [images, videos, audios] = mode === 'reference' ? await Promise.all([Promise.all(referenceImages.map(uploadReference)), Promise.all(referenceVideos.map(uploadReference)), Promise.all(referenceAudios.map(uploadReference))]) : [[], [], []]
       const seed = Math.floor(Math.random() * 1_000_000_000)
-      const postProcess = upscale === 'ltx' ? { type: 'ltx' as const, model: bootstrap.ltxModel!, vae: bootstrap.ltxVae! } : upscale === 'rtx' ? { type: 'rtx' as const, model: rtxModel } : undefined
+      const postProcess = upscale === 'refine' ? { type: 'refine' as const, steps: refineSteps, denoise: refineDenoise } : upscale === 'ltx' ? { type: 'ltx' as const, model: bootstrap.ltxModel!, vae: bootstrap.ltxVae! } : upscale === 'rtx' ? { type: 'rtx' as const, model: rtxModel } : undefined
       const clothingDirection = clothingPolicy === 'assigned' ? 'Clothing intent: preserve the assigned wardrobe shown in the reference images.' : clothingPolicy === 'underwear' ? 'Clothing intent: keep only the underwear shown in each adult character identity reference; do not add outer garments.' : 'Clothing intent: adult fictional characters only; follow the scene prompt explicitly and do not treat reference clothing as mandatory.'
       const effectivePrompt = applyDialoguePolicy([prompt, mode === 'reference' ? clothingDirection : ''].filter(Boolean).join(' '), noDialogue)
       const graph = provider === 'ltx25'
@@ -337,12 +348,12 @@ export default function MobileApp() {
       {mode === 'reference' && <MobileReferencePanel images={referenceImages} videos={referenceVideos} audios={referenceAudios} clothingPolicy={clothingPolicy} refImageSize={refImageSize} onClothingPolicy={setClothingPolicy} onRefImageSize={setRefImageSize} onAdd={chooseReferences} onRemove={(kind, index) => { const setter = kind === 'image' ? setReferenceImages : kind === 'video' ? setReferenceVideos : setReferenceAudios; setter((items) => items.filter((_, itemIndex) => itemIndex !== index)) }} onInsert={(value) => setPrompt((current) => `${current}${current.trim() ? ' ' : ''}${value}`)} />}
       <RenderSize value={resolution} onChange={setResolution} provider={provider} />
       <div className="mobile-options"><label>Duration<span><input aria-label="Duration" type="range" min="3" max={provider === 'ltx25' ? 10 : 15} value={renderDuration} onChange={(event) => setDuration(Number(event.target.value))} /><output>{renderDuration}s</output></span></label><label>Render quality<select value={quality} onChange={(event) => setQuality(event.target.value as 'quality' | 'turbo')}><option value="turbo">{provider === 'ltx25' ? 'Turbo · distilled single-stage 8' : mode === 'reference' ? 'Turbo · Ref2VA 8-step v1.0' : 'Balanced · 8-step turbo'}</option><option value="quality">{provider === 'ltx25' ? 'Quality · official two-stage 8 + 3' : 'Quality · 30 steps'}</option></select></label></div>
-      {provider === 'minimax' && <fieldset className="mobile-upscale"><legend>Post-render upscale</legend><div><label><input type="radio" name="mobile-upscale" checked={upscale === 'off'} onChange={() => setUpscale('off')} />Off</label><label><input type="radio" name="mobile-upscale" checked={upscale === 'ltx'} disabled={!ltxUpscaleReady} onChange={() => setUpscale('ltx')} />LTX 2.5 latent · 2×</label><label><input type="radio" name="mobile-upscale" checked={upscale === 'rtx'} disabled={!bootstrap?.upscalers?.length} onChange={() => setUpscale('rtx')} />RTX/CUDA frames · experimental</label></div>{upscale === 'rtx' && <select aria-label="RTX upscale model" value={rtxModel} onChange={(event) => setRtxModel(event.target.value)}>{(bootstrap?.upscalers ?? []).map((name) => <option key={name}>{name}</option>)}</select>}<small>{upscale === 'off' ? 'Keep the native MiniMax output.' : upscale === 'ltx' ? 'Verified LTX video-VAE encode → learned latent 2× → decode; original MiniMax audio is retained.' : 'Frame-by-frame processing may amplify noise, flicker, or temporal shimmer.'}</small></fieldset>}
+      {provider === 'minimax' && <fieldset className="mobile-upscale"><legend>Refinement and upscale</legend><div><label><input type="radio" name="mobile-upscale" checked={upscale === 'off'} onChange={() => setUpscale('off')} />Off</label><label><input type="radio" name="mobile-upscale" checked={upscale === 'refine'} onChange={() => setUpscale('refine')} />Refine · same resolution</label><label><input type="radio" name="mobile-upscale" checked={upscale === 'ltx'} disabled={!ltxUpscaleReady} onChange={() => setUpscale('ltx')} />LTX 2.5 latent · 2×</label><label><input type="radio" name="mobile-upscale" checked={upscale === 'rtx'} disabled={!bootstrap?.upscalers?.length} onChange={() => setUpscale('rtx')} />RTX/CUDA frames · experimental</label></div>{upscale === 'refine' && <div className="mobile-refine-controls"><label>Refinement steps<input type="number" min={1} max={30} value={refineSteps} onChange={(event) => setRefineSteps(Math.max(1, Math.min(30, Math.round(Number(event.target.value)) || 1)))} /></label><label>Strength / denoise<input type="number" min={0.01} max={1} step={0.05} value={refineDenoise} onChange={(event) => setRefineDenoise(Math.max(0.01, Math.min(1, Number(event.target.value) || 0.01)))} /></label></div>}{upscale === 'rtx' && <select aria-label="RTX upscale model" value={rtxModel} onChange={(event) => setRtxModel(event.target.value)}>{(bootstrap?.upscalers ?? []).map((name) => <option key={name}>{name}</option>)}</select>}<small>{upscale === 'off' ? 'Keep the native MiniMax output.' : upscale === 'refine' ? 'A second H3 sampling pass cleans detail at the original size; first-pass audio is retained.' : upscale === 'ltx' ? 'Verified LTX video-VAE encode → learned latent 2× → decode; original MiniMax audio is retained.' : 'Frame-by-frame processing may amplify noise, flicker, or temporal shimmer.'}</small></fieldset>}
       {(livePreview || status === 'uploading' || status === 'queued' || status === 'rendering') && <section className={`mobile-live-preview ${livePreview ? '' : 'constructing'}`}><div><strong>{progressLabel}</strong><span>{progress}%</span></div>{livePreview ? <img src={livePreview} alt="Current ComfyUI generation preview" /> : <div><RenderConstruction /><span>{status === 'uploading' ? 'Preparing your input…' : 'Constructing the first preview frame…'}</span></div>}<progress max="100" value={progress}>{progress}%</progress></section>}
       {message && <div className={`mobile-message ${status}`} role="status">{status === 'uploading' || status === 'queued' || status === 'rendering' ? <LoaderCircle className="spin" size={17} /> : null}<span>{message}</span></div>}
       <div className="mobile-generate-actions">{promptId && (status === 'queued' || status === 'rendering') && <button className="mobile-cancel" onClick={() => void cancel()}><CircleStop size={18} />Cancel</button>}<button className="mobile-generate" disabled={busy || refreshing || !modelReady} onClick={() => void generate()}>{busy ? <LoaderCircle className="spin" size={19} /> : <Play size={19} fill="currentColor" />}{status === 'uploading' ? 'Uploading inputs…' : status === 'queued' ? 'Queued on desktop…' : status === 'rendering' ? `Rendering · ${progress}%` : refreshing ? 'Connecting…' : !modelReady ? 'Models unavailable' : `Generate ${mode === 'reference' ? 'reference ' : ''}video`}</button></div>
     </section>}
-    {mobileView === 'video' && outputUrl && <section className="mobile-output"><div><strong>Your video</strong><span>Rendered with {provider === 'ltx25' ? 'LTX‑2.5' : 'MiniMax H3'}</span></div><video src={outputUrl} controls playsInline preload="metadata" /><a href={`${outputUrl}&download=1`} download><Download size={18} />Download video</a></section>}
+    {mobileView === 'video' && outputUrl && <section className="mobile-output"><div><strong>Your video</strong><span>Rendered with {provider === 'ltx25' ? 'LTX‑2.5' : 'MiniMax H3'}</span></div><ReliableVideo src={outputUrl} controls playsInline preload="metadata" /><a href={`${outputUrl}&download=1`} download><Download size={18} />Download video</a></section>}
     {mobileView === 'image' && <section className="mobile-create-panel mobile-image-workspace"><div className={`mobile-provider-status ${zReady ? 'ready' : ''}`}><span />{zReady ? 'Z-Image pipeline ready' : 'Z-Image components missing'}</div><label className="mobile-prompt">Image prompt<textarea value={imagePrompt} onChange={(event) => setImagePrompt(event.target.value)} placeholder="Subject, environment, composition, lens, lighting, color, and texture…" /></label><button className="secondary-button mobile-image-enhance" disabled={!imagePrompt.trim() || !llmModels.length || assisting} onClick={async () => { setAssisting(true); setImageMessage('Improving the image prompt…'); try { const result = await lanFetch<{ response: string }>('/api/lan/ollama', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: `Rewrite this as one polished Z-Image still prompt. Include composition, lens, lighting, texture, and color. Return only the final prompt.\n\n${imagePrompt}` }) }); setImagePrompt(result.response); setImageMessage('Prompt enhanced.') } catch (error) { setImageMessage(error instanceof Error ? error.message : String(error)) } finally { setAssisting(false) } }}><Sparkles size={16} />Enhance with {llmLabel}</button><RenderSize value={imageResolution} onChange={setImageResolution} provider="zimage" />{imageOutput && <div className="mobile-image-result"><img src={imageOutput.url} alt="Generated Z-Image output" /><div><a href={`${imageOutput.url}&download=1`} download><Download size={17} />Download</a><button onClick={() => { setFrame({ path: imageOutput.name, name: imageOutput.name, kind: 'image', preview: imageOutput.url }); setMode('image'); setMobileView('video'); setMessage('Z-Image output loaded as the first frame.') }}><Play size={16} />Animate as video</button></div></div>}{imageMessage && <div className="mobile-message" role="status">{imageBusy && <LoaderCircle className="spin" size={17} />}<span>{imageMessage}</span></div>}<button className="mobile-generate" disabled={imageBusy || !zReady || !imagePrompt.trim()} onClick={() => void generateImage()}>{imageBusy ? <LoaderCircle className="spin" size={19} /> : <ImageIcon size={19} />}Create image</button></section>}
     {mobileView === 'characters' && <section className="mobile-character-library">{characters.length ? characters.map((character) => <article key={character.id}><div className="mobile-character-gallery">{character.references.length ? character.references.slice(0, 4).map((reference) => <img key={reference.name} src={reference.preview} alt={`${character.name} reference`} />) : <div><Images size={28} /><span>No approved images</span></div>}</div><div className="mobile-character-details"><h2>{character.name}</h2><p>{character.description || 'No appearance notes yet.'}</p>{character.wardrobe && <small><strong>Wardrobe</strong>{character.wardrobe}</small>}{character.voiceNotes && <small><strong>Performance</strong>{character.voiceNotes}</small>}<button onClick={() => applyCharacter(character)}><WandSparkles size={16} />Use in a video prompt</button></div></article>) : <div className="mobile-library-empty"><Users size={30} /><strong>No approved characters yet</strong><span>Create and approve a Character Studio reference on the desktop, then refresh this page.</span></div>}</section>}
     <section className="mobile-install"><Smartphone size={20} /><span><strong>Keep it on your home screen</strong><small>{window.isSecureContext ? 'Install MiniMax Mobile for an app-like workspace.' : 'Use the browser menu to add a shortcut. Verified PWA installation and offline caching require trusted HTTPS.'}</small></span>{installPrompt && <button onClick={() => { void installPrompt.prompt(); setInstallPrompt(null) }}>Install</button>}</section>

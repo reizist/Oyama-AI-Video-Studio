@@ -1,7 +1,9 @@
+import { PreviewPanel, ProductionLoading } from './Workspace'
 import { useEffect, useMemo, useState } from 'react'
 import { AlertCircle, Check, CircleStop, Disc3, Gauge, Headphones, LoaderCircle, Music2, Play, RotateCcw, Sparkles, WandSparkles } from 'lucide-react'
 import type { AceStepGenerationOptions, AceStepModelSelection, AppSettings, GenerationJob } from '../types'
 import { resolveLlmConnection } from '../lib/llmProvider'
+import { SmartPromptEditor } from './SmartPromptEditor'
 
 type MusicState = {
   model: 'sft' | 'base'
@@ -31,7 +33,7 @@ function readState(): MusicState {
   catch { return defaults }
 }
 
-export function AceStepWorkspace({ settings, models, connected, pipelineReady, missingNodes, latestJob, submitting, cancelling, ollamaAvailable, onGenerate, onCancel }: {
+export function AceStepWorkspace({ settings, models, connected, pipelineReady, missingNodes, latestJob, submitting, cancelling, ollamaAvailable, onGenerate, onCancel, onSelectMusic3 }: {
   settings: AppSettings
   models: AceStepModelSelection
   connected: boolean
@@ -43,12 +45,14 @@ export function AceStepWorkspace({ settings, models, connected, pipelineReady, m
   ollamaAvailable: boolean
   onGenerate(options: AceStepGenerationOptions): void
   onCancel(job: GenerationJob): void
+  onSelectMusic3(): void
 }) {
   const initial = useMemo(readState, [])
   const [state, setState] = useState(initial)
   const llm = resolveLlmConnection(settings)
   const [refining, setRefining] = useState(false)
   const [suggestion, setSuggestion] = useState('')
+  const [assistantError, setAssistantError] = useState('')
   const set = <K extends keyof MusicState>(key: K, value: MusicState[K]) => setState((current) => ({ ...current, [key]: value }))
   const selectedModel = state.model === 'sft' ? models.sft : models.base
   const sharedReady = Boolean(models.vae && models.textEncoderSmall && models.textEncoderLarge)
@@ -56,17 +60,23 @@ export function AceStepWorkspace({ settings, models, connected, pipelineReady, m
 
   useEffect(() => { localStorage.setItem('acestep.workspace', JSON.stringify(state)) }, [state])
   useEffect(() => {
+    const loadPrompt = (event: Event) => set('tags', (event as CustomEvent<string>).detail)
+    window.addEventListener('oyama:load-music-prompt', loadPrompt)
+    return () => window.removeEventListener('oyama:load-music-prompt', loadPrompt)
+  }, [])
+  useEffect(() => {
     if (state.model === 'sft' && !models.sft && models.base) set('model', 'base')
     if (state.model === 'base' && !models.base && models.sft) set('model', 'sft')
   }, [models.base, models.sft, state.model])
 
   const refine = async () => {
     if (!state.tags.trim() || !llm.model) return
-    setRefining(true); setSuggestion('')
+    setRefining(true); setSuggestion(''); setAssistantError('')
     try {
       const result = await window.minimax.generateWithOllama(llm.url, llm.model, `Rewrite this as a concise production brief for ACE-Step 1.5 music generation. Preserve the intent and specify genre, mood, tempo feel, instruments, vocal character, arrangement, and production texture. Do not write lyrics. Return only the finished music direction.\n\nDRAFT:\n${state.tags.trim()}`, llm.provider)
       setSuggestion(result)
-    } finally { setRefining(false) }
+    } catch (cause) { setAssistantError(cause instanceof Error ? cause.message : String(cause)) }
+    finally { setRefining(false) }
   }
 
   const reset = () => { setState({ ...defaults, seed: Math.floor(Math.random() * 1_000_000_000), model: models.sft ? 'sft' : 'base' }); setSuggestion('') }
@@ -80,16 +90,17 @@ export function AceStepWorkspace({ settings, models, connected, pipelineReady, m
     </div>
     <div className="workspace-grid ace-workspace-grid">
       <section className="composer-panel">
-        <div className="provider-note ace-provider-note"><Music2 size={18} /><span><strong>Native ComfyUI generation</strong><small>Choose XL SFT or XL Base. Music settings and history stay separate from video projects.</small></span><button type="button" onClick={reset}><RotateCcw size={14} />Reset music</button></div>
+        <div className="provider-note ace-provider-note"><Music2 size={18} /><span><strong>Native ComfyUI generation</strong><small>Choose XL SFT or XL Base. Music settings and history stay separate from video projects.</small></span><button type="button" onClick={onSelectMusic3}>Music 3</button><button type="button" onClick={reset}><RotateCcw size={14} />Reset music</button></div>
 
         <fieldset className="model-picker"><legend>ACE-Step model</legend><div className="model-choice-grid">
           <label className={state.model === 'sft' ? 'selected' : ''}><input type="radio" name="ace-model" checked={state.model === 'sft'} disabled={!models.sft} onChange={() => set('model', 'sft')} /><span><strong>XL SFT</strong><small>Instruction-tuned · official CFG 7</small></span><em>{models.sft ? 'Ready' : 'Missing'}</em></label>
           <label className={state.model === 'base' ? 'selected' : ''}><input type="radio" name="ace-model" checked={state.model === 'base'} disabled={!models.base} onChange={() => set('model', 'base')} /><span><strong>XL Base</strong><small>Base model · official CFG 6</small></span><em>{models.base ? 'Ready' : 'Missing'}</em></label>
         </div></fieldset>
 
-        <div className="field-group prompt-field ace-direction-field"><div className="field-label"><label htmlFor="ace-tags">Music direction</label><span>{state.tags.length.toLocaleString()} characters</span></div><textarea id="ace-tags" value={state.tags} onChange={(event) => set('tags', event.target.value)} placeholder="Genre, mood, instruments, vocal style, arrangement, and production texture…" />
+        <div className="field-group prompt-field ace-direction-field"><div className="field-label"><label htmlFor="ace-tags">Music direction</label><span>{state.tags.length.toLocaleString()} characters</span></div><SmartPromptEditor id="ace-tags" value={state.tags} onChange={(value) => set('tags', value)} placeholder="Genre, mood, instruments, vocal style, arrangement, and production texture… Type // for production commands." />
           <div className="prompt-tools"><div className="prompt-tool-buttons"><button type="button" onClick={() => void refine()} disabled={!ollamaAvailable || refining || !state.tags.trim()}>{refining ? <LoaderCircle size={14} className="spin" /> : <WandSparkles size={14} />}Refine music direction</button></div><span className={`local-model-chip ${ollamaAvailable ? 'online' : ''}`}><span />{ollamaAvailable ? llm.model : `${llm.label} offline`}</span></div>
           {suggestion && <div className="assistant-result"><div className="assistant-result-heading"><span><Sparkles size={14} />Local suggestion</span><small>Review before applying</small></div><textarea aria-label="ACE-Step music direction suggestion" value={suggestion} readOnly /><div className="assistant-actions"><button className="secondary-button" onClick={() => setSuggestion('')}>Dismiss</button><button className="primary-button" onClick={() => { set('tags', suggestion); setSuggestion('') }}><Check size={14} />Use suggestion</button></div></div>}
+          {assistantError && <p className="field-help error"><AlertCircle size={13} />{assistantError}</p>}
         </div>
 
         <div className="ace-lyrics-heading"><span><strong>Lyrics</strong><small>Use section labels such as [Verse], [Chorus], and [Bridge].</small></span><label className="compact-toggle"><input type="checkbox" checked={state.instrumental} onChange={(event) => set('instrumental', event.target.checked)} /><span>Instrumental</span></label></div>
@@ -108,10 +119,10 @@ export function AceStepWorkspace({ settings, models, connected, pipelineReady, m
         <div className="generate-bar"><div className="generation-summary"><Gauge size={17} /><span><strong>{state.duration}s · {state.bpm} BPM</strong><small>{state.model.toUpperCase()} · 50 Euler steps · FLAC</small></span></div><div className="generate-actions">{running && <button className="danger-button" onClick={() => onCancel(latestJob)} disabled={cancelling}><CircleStop size={16} />{cancelling ? 'Stopping…' : 'Cancel'}</button>}<button className="primary-button" disabled={submitting || !connected || !modelReady || !state.tags.trim() || (!state.instrumental && !state.lyrics.trim())} onClick={generate}>{submitting ? <LoaderCircle size={18} className="spin" /> : <Play size={18} fill="currentColor" />}{submitting ? 'Submitting…' : 'Generate music'}</button></div></div>
       </section>
 
-      <aside className="preview-panel ace-preview-panel"><div className="panel-heading"><div><span>ACE-STEP OUTPUT</span><strong>Current music workspace</strong></div>{latestJob && <span className={`status-badge ${latestJob.status}`}>{latestJob.status}</span>}</div>
-        <div className="ace-preview-stage">{latestJob?.outputUrl ? <div className="audio-result"><div className="album-placeholder"><Disc3 size={64} /><span>{state.model.toUpperCase()}</span></div><strong>{state.tags || 'Generated track'}</strong><audio src={latestJob.outputUrl} controls preload="metadata" /><a className="secondary-button" href={latestJob.outputUrl} target="_blank" rel="noreferrer">Open audio file</a></div> : running ? <div className="render-state"><LoaderCircle className="spin" size={36} /><strong>{latestJob.progressLabel ?? 'Generating music with ACE-Step'}</strong><span>{state.duration}s · {state.bpm} BPM · {state.model.toUpperCase()}</span><div className="progress"><i style={{ width: `${latestJob.progress}%` }} /></div><small>{Math.round(latestJob.progress)}% · live ComfyUI status</small></div> : <div className="empty-preview"><div className="preview-icon"><Headphones size={30} /></div><strong>Your track will appear here</strong><span>Describe the music, add lyrics or choose Instrumental, then send it to ComfyUI.</span></div>}</div>
+      <PreviewPanel><div className="panel-heading"><div><span>ACE-STEP OUTPUT</span><strong>Current music workspace</strong></div>{latestJob && <span className={`status-badge ${latestJob.status}`}>{latestJob.status}</span>}</div>
+        <div className="ace-preview-stage">{latestJob?.outputUrl ? <div className="audio-result"><div className="album-placeholder"><Disc3 size={64} /><span>{state.model.toUpperCase()}</span></div><strong>{state.tags || 'Generated track'}</strong><audio src={latestJob.outputUrl} controls preload="metadata" /><a className="secondary-button" href={latestJob.outputUrl} target="_blank" rel="noreferrer">Open audio file</a></div> : running ? <div className="render-state"><ProductionLoading label={latestJob.progressLabel || 'Rendering audio'} progress={latestJob.progress || undefined}/><strong>{latestJob.progressLabel ?? 'Generating music with ACE-Step'}</strong><span>{state.duration}s · {state.bpm} BPM · {state.model.toUpperCase()}</span><div className="progress"><i style={{ width: `${latestJob.progress}%` }} /></div><small>{Math.round(latestJob.progress)}% · live ComfyUI status</small></div> : <div className="empty-preview"><div className="preview-icon"><Headphones size={30} /></div><strong>Your track will appear here</strong><span>Describe the music, add lyrics or choose Instrumental, then send it to ComfyUI.</span></div>}</div>
         <div className="pipeline-summary"><Pipeline ready={Boolean(selectedModel)} label={`${state.model.toUpperCase()} diffusion`} value={selectedModel} /><Pipeline ready={Boolean(models.textEncoderSmall && models.textEncoderLarge)} label="ACE text encoders" value={models.textEncoderSmall && models.textEncoderLarge ? `${models.textEncoderSmall} + ${models.textEncoderLarge}` : ''} /><Pipeline ready={Boolean(models.vae)} label="Audio VAE" value={models.vae} /></div>
-      </aside>
+      </PreviewPanel>
     </div>
   </div>
 }

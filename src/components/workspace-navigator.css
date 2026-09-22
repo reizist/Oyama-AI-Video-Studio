@@ -1,0 +1,37 @@
+.workspace-navigator.ui-dialog-content { top: calc(50% + 20px); width: min(760px, calc(100vw - 32px)); max-height: min(780px, calc(100dvh - 100px)); display: flex; flex-direction: column; gap: 16px; padding: 22px; color: var(--text); background: var(--surface, #172129); }
+.workspace-navigator header { padding-right: 28px; }
+.workspace-navigator header p { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+.workspace-navigator-search { display: flex; align-items: center; gap: 10px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 7px; flex: none; }
+.workspace-navigator-search input { width: 100%; min-width: 0; padding: 12px 0; border: 0; background: transparent; color: inherit; font: inherit; }
+.workspace-navigator-results { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.workspace-navigator-results h2 { margin: 16px 0 8px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.workspace-navigator-results section:first-child h2 { margin-top: 0; }
+.workspace-navigator-results section > div { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.workspace-navigator-results button { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2, #1b262f); color: inherit; text-align: left; cursor: pointer; }
+.workspace-navigator-results button span { display: grid; gap: 4px; }
+.workspace-navigator-results button strong { font-size: 12px; }
+.workspace-navigator-results button small { color: var(--muted); font-size: 11px; line-height: 1.4; }
+.workspace-navigator-results button svg { flex: none; }
+.workspace-navigator-results button:hover, .workspace-navigator-results button[aria-current] { background: var(--accent-soft); border-color: var(--accent); }
+.workspace-navigator footer { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; border-top: 1px solid var(--line); padding-top: 12px; }
+.workspace-navigator footer button { display: inline-flex; align-items: center; gap: 6px; padding: 8px; background: transparent; color: inherit; border: 1px solid var(--line); border-radius: 5px; cursor: pointer; }
+.workspace-navigator footer small { color: var(--muted); font-size: 10px; }
+.workspace-navigator button:focus-visible, .workspace-navigator input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.video-mode-bar .workspace-switcher, .studio-topbar .workspace-switcher { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; max-width: 220px; padding: 0 14px; border: 0; border-right: 1px solid #34414c; background: #192934; color: #e9f0f6; -webkit-app-region: no-drag; cursor: pointer; }
+.workspace-switcher > span { display: grid; gap: 3px; text-align: left; min-width: 0; }
+.workspace-switcher strong { font-size: 12px; }
+.workspace-switcher small { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #a5c8df; font-size: 10px; }
+.workspace-switcher svg { flex: none; }
+.workspace-switcher:hover { background: #28465b; }
+.video-pipeline-state { border: 0; background: transparent; cursor: pointer; }
+.video-pipeline-state:hover { background: #203440; }
+.video-shell-active > .main-area > .notice { max-height: min(300px, 50vh); overflow: auto; }
+.app-shell .storage-failure { position: fixed; z-index: 140; bottom: 82px; left: 20px; max-width: min(520px, calc(100vw - 40px)); padding: 14px; border: 1px solid #bd7759; border-radius: 8px; background: #35241e; color: #ffe0cb; }
+.storage-failure p { margin: 6px 0 10px; }
+.workspace-project-modal.ui-dialog-content { top: calc(50% + 20px); width: min(980px, calc(100vw - 32px)); max-height: calc(100dvh - 100px); }
+.workspace-project-modal > header { padding-right: 50px; }
+.project-feedback { padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; }
+.project-feedback.error { border-color: #a86d53; background: #35241e; color: #ffe0cb; }
+.project-feedback.success { border-color: #326c58; background: #173b2d; color: #bcf0d8; }
+@media (max-width: 1000px) { .studio-topbar .workspace-switcher, .video-mode-bar .workspace-switcher { padding-inline: 10px; max-width: 180px; } .video-mode-bar .video-project-name { display: none; } }
+@media (max-width: 600px) { .workspace-navigator-results section > div { grid-template-columns: 1fr; } .workspace-navigator.ui-dialog-content { padding: 16px; gap: 10px; } .workspace-switcher small { max-width: 90px; } }

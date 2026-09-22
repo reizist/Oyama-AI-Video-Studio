@@ -10,16 +10,24 @@ function findModel(files: ModelFile[], kind: ModelKind, expressions: RegExp | Re
 }
 
 export type H3TextEncoderPreference = 'fast' | 'quality'
+export type H3DiffusionPrecision = 'int8' | 'nvfp4'
 
 export const H3_FAST_TEXT_ENCODER = 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors'
 export const H3_QUALITY_TEXT_ENCODER = 'qwen3vl_32b_minimax_h3_int8_convrot.safetensors'
 
-export function inferSelections(files: ModelFile[], turbo: 'off' | '4' | '8', textEncoderPreference: H3TextEncoderPreference = 'fast'): ModelSelection {
+export function inferSelections(files: ModelFile[], turbo: 'off' | '4' | '8' | 'fast', textEncoderPreference: H3TextEncoderPreference = 'fast', diffusionPrecision: H3DiffusionPrecision = 'int8'): ModelSelection {
   const find = (kind: ModelKind, expressions: RegExp | RegExp[]) => findModel(files, kind, expressions)
   const turboSteps = turbo === 'off' ? '[48]' : turbo
+  const fl2vaExpressions = diffusionPrecision === 'nvfp4'
+    ? [/^minimax_h3_fl2va_pruned_nvfp4\.safetensors$/i, /^minimax_h3_fl2va_pruned_int8_convrot\.safetensors$/i, /^minimax_h3_fl2va.*\.safetensors$/i]
+    : [/^minimax_h3_fl2va_pruned_int8_convrot\.safetensors$/i, /^minimax_h3_fl2va_pruned_nvfp4\.safetensors$/i, /^minimax_h3_fl2va.*\.safetensors$/i]
+  const ref2vaExpressions = diffusionPrecision === 'nvfp4'
+    ? [/^minimax_h3_ref2va_pruned_nvfp4\.safetensors$/i, /^minimax_h3_ref2va_pruned_int8_convrot\.safetensors$/i, /^minimax_h3_ref2va.*\.safetensors$/i]
+    : [/^minimax_h3_ref2va_pruned_int8_convrot\.safetensors$/i, /^minimax_h3_ref2va_pruned_nvfp4\.safetensors$/i, /^minimax_h3_ref2va.*\.safetensors$/i]
   return {
-    fl2va: find('diffusion_models', [/^minimax_h3_fl2va_pruned_int8_convrot\.safetensors$/i, /^minimax_h3_fl2va.*\.safetensors$/i]),
-    ref2va: find('diffusion_models', [/^minimax_h3_ref2va_pruned_int8_convrot\.safetensors$/i, /^minimax_h3_ref2va.*\.safetensors$/i]),
+    fl2va: find('diffusion_models', fl2vaExpressions),
+    ref2va: find('diffusion_models', ref2vaExpressions),
+    fastH3: find('diffusion_models', /^fastvideo_fasth3_8step_v2_pruned_int8_convrot\.safetensors$/i),
     // Keep NVFP4-AWQ as the fast default. The full INT8 ConvRot encoder is an
     // intentional opt-in: falling back would make the quality choice misleading.
     textEncoder: textEncoderPreference === 'quality'

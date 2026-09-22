@@ -8,8 +8,6 @@
 
 Oyama AI Video Studio is a local-first AI filmmaking workstation for ComfyUI. It brings MiniMax H3 video, LTX 2.5 video, Z-Image stills, ACE-Step music, reusable production assets, and local rendering into one desktop workspace. Models are indexed and used in place: the application never downloads, copies, or reorganizes your model files.
 
-![Oyama AI Video Studio's dark-blue video workspace](Readmescreenshots/studio-workspace-dark-blue.png)
-
 > **Privacy by default:** prompts, media, models, output, and optional prompt enhancement remain on your workstation. LAN sharing is opt-in and token-protected.
 
 ## Quick start
@@ -24,7 +22,7 @@ Oyama AI Video Studio is a local-first AI filmmaking workstation for ComfyUI. It
    pnpm dev
    ```
 
-5. Open **Settings**, confirm the ComfyUI address (default `http://127.0.0.1:8188`), select **Test connection**, then **Rescan** model folders.
+5. Open **Settings**, confirm the ComfyUI address (default `http://127.0.0.1:8188`), select **Test connection**, then **Rescan** model folders. Settings save automatically.
 6. Choose **Video**, **Image**, **LTX 2.5**, or **Music**, add a prompt and any references, and generate locally.
 
 The app reports which model stack components and ComfyUI nodes are available before a render is queued. A missing optional feature is shown as unavailable; a required base model prevents that provider from being used until it is installed.
@@ -51,6 +49,9 @@ The app reports which model stack components and ComfyUI nodes are available bef
 - Persistent generation defaults with Native Quality, official Turbo 8, Preview, and separately disclosed experimental sampling controls
 - Guided H3 Native Quality, Turbo 8, and Preview presets with resolution quality labels, validated official-stack reporting, and custom sampling isolated under an Experimental disclosure
 - A fixed-seed H3 quality diagnostic that queues matching Native and Turbo 8 renders for direct A/B comparison
+- A persistent, PC-specific H3 attention benchmark for Kitchen INT8, SageAttention, and Sol-Attn, with configurable clip duration and resolution
+- Runtime-aware GPU routing that reports the device nodes actually advertised by ComfyUI, supports placing a video/audio VAE on a secondary GPU, and provides a short real-render placement diagnostic
+- Persistent VRAM-overcommit acknowledgement: renders whose routed estimate exceeds free VRAM require an explicit saved opt-in
 - Optional verified LTX 2.5 latent 2× post-processing for every MiniMax video mode; LTX-VAE encodes the completed frames, the learned latent upsampler doubles spatial size, and the app trims padding and retains untouched MiniMax audio
 - A one-click, per-user NSIS Windows installer with desktop and Start menu shortcuts
 - A same-network mobile companion for native MiniMax H3 or LTX‑2.5 T2V/I2V creation, separate provider state, automatic crop controls, video preview, and download
@@ -71,9 +72,18 @@ The phone uses the model folders, ComfyUI address, and output settings configure
 ## Local services
 
 - ComfyUI defaults to `http://127.0.0.1:8188`.
-- Ollama defaults to `http://127.0.0.1:11434`. The app lists installed local text models and deliberately excludes embedding and cloud-backed entries. Prompt text never needs to leave the workstation.
+- Ollama defaults to `http://127.0.0.1:11434`. The app distinguishes a reachable Ollama server from a server with no usable models, and deliberately excludes embedding and cloud-backed entries. Prompt text never needs to leave the workstation.
 
 Both addresses, every model directory, and the ComfyUI output directory can be changed from Settings.
+
+### Ollama setup
+
+1. Install and start Ollama.
+2. Install at least one local generation model. The default selection can be installed with `ollama pull qwen3:latest`.
+3. In **Settings → Local AI prompt assistant**, select **Ollama**, keep `http://127.0.0.1:11434` unless the server uses another address, and choose **Test & refresh**.
+4. Select the discovered model. Text models support Ask and prompt-refinement tools; inspecting reference images additionally requires a vision-capable model.
+
+**Connected · no models** means the Ollama service is running but `ollama list` contains no usable generation model. **Unreachable** means the app could not contact the configured server; start Ollama, verify the URL, and test again. Provider errors are shown in the feature that made the request.
 
 ## Models and ComfyUI setup
 
@@ -128,8 +138,10 @@ Turbo is the fast 8-step option. Original Z-Image is the 40-step detail option. 
 
 ### Optional local AI and acceleration
 
-- **Ollama:** optional prompt enhancement at `http://127.0.0.1:11434`; any installed local generation model may be selected. Embedding and cloud-backed models are intentionally excluded.
-- **Kitchen INT8 / SageAttention:** optional attention acceleration. Select it only after ComfyUI reports it as available in Settings.
+- **Ollama:** optional conversational Ask mode, prompt enhancement, structured prompt creation, and reference-image inspection at `http://127.0.0.1:11434`. Any installed local generation model may be selected; image inspection requires a vision-capable model. Embedding and cloud-backed models are intentionally excluded.
+- **Kitchen INT8 / SageAttention:** optional attention acceleration. Select it only after ComfyUI reports it as available in **Settings → Render performance**.
+- **Sol-Attn:** optional H3-only sparse attention. It is applied exclusively to H3/Ref2VA graphs, not stacked with the generic attention patch. Benchmark it on the target PC before selecting it for production.
+- **Multi-GPU routing:** **Settings → GPU Routing** only exposes the device-aware routes that the connected ComfyUI server advertises. Core ComfyUI can route a VAE to another GPU through `SelectVAEDevice`; it cannot route that VAE to CPU. CPU VAE placement requires a compatible `VAELoaderMultiGPU` custom node.
 - **Additional LoRAs:** optional user LoRAs belong in `models/loras`. The automatic official MiniMax Turbo LoRAs do not consume the app's additional-LoRA slots.
 
 ## Workflow compatibility
@@ -138,7 +150,11 @@ MiniMax generation is built from ComfyUI's official T2V/I2V/Ref2V core graph: na
 
 Turbo sampling uses the official sampler/scheduler pair unless the user explicitly enables custom sampling. Ref2VA Turbo 8-step v1.0 at 768p automatically applies its required 6 / 3 training shifts. Custom combinations remain clearly marked experimental because they are not equivalent to the published template and can produce unusual motion or composition.
 
-The Settings workspace can save and apply resolution, duration, quality mode, full-quality steps, LoRA strength, reference-image fidelity, live preview, sampler/scheduler, and sigma-shift defaults. Native H3 behavior leaves shifts on the model baseline (video 12, audio 3). Enabling custom shifts inserts ComfyUI's core `MiniMaxH3SigmaShift` node; the Euler/Beta preset is intentionally labeled experimental because it targets converted Turbo LoRA compatibility rather than the published template.
+The Settings workspace automatically persists resolution, duration, quality mode, full-quality steps, LoRA strength, reference-image fidelity, live preview, sampler/scheduler, sigma-shift defaults, attention selection, GPU-routing choices, benchmark profile, and the VRAM-overcommit acknowledgement. Native H3 behavior leaves shifts on the model baseline (video 12, audio 3). Enabling custom shifts inserts ComfyUI's core `MiniMaxH3SigmaShift` node; the Euler/Beta preset is intentionally labeled experimental because it targets converted Turbo LoRA compatibility rather than the published template.
+
+The **Attention benchmark** queues the same fixed-prompt, fixed-seed Turbo 8 text-to-video render for Kitchen INT8, SageAttention, and Sol-Attn, then retains the timings and recommends the fastest completed option for that PC. Choose a duration and resolution that match normal delivery work, leave the ComfyUI queue otherwise idle, and re-run after changing a driver, model precision, launch flags, ComfyUI/custom-node version, or GPU routing.
+
+The **GPU Routing** capability gate is intentionally conservative: it reports whether a device-aware node is available for each component, but a node being detected is not proof that the target executes correctly. Use **Test GPU Routing** after hardware or ComfyUI changes. The saved **Allow render despite VRAM estimate** setting only permits a deliberate overcommit attempt; ComfyUI may still offload or reject the render.
 
 The **LTX 2.5** navigation entry is a separate provider workspace and never reads or changes MiniMax prompts, inputs, Turbo LoRAs, samplers, sigma shifts, or post-render upscale choices. Its Quality preset follows ComfyUI's official two-stage distilled workflow: an 8-step half-resolution pass, LTX latent spatial 2× upscaling, and a 3-step refinement pass. Its Turbo preset uses the official fixed 8-step distilled schedule as a single full-resolution stage. Both use Euler ancestral, CFG 1, 24 fps, the LTX Gemma encoder, separate LTX video/audio VAEs, and native synchronized audio.
 
@@ -192,34 +208,6 @@ Package metadata lists **James Knox** (`contact@jamesnox.com`) as the maintainer
 - Independent model locations for diffusion models, text encoders, VAEs, LoRAs, preview VAEs, and vision encoders
 - ComfyUI connection health, GPU/VRAM display, job status, cancellation, history, and output playback
 - Responsive layouts for compact and large desktop windows
-
-## Screenshots
-
-The screenshots below are captured from the current desktop workflow. The complete capture sequence is kept in [`Readmescreenshots`](Readmescreenshots) for maintainers who need the full interaction history.
-
-### Reference prompt builder
-
-The reference mode keeps the generated reference instructions visible above the editable prompt, numbers each image, and preserves the existing video output preview.
-
-![Reference prompt builder with numbered references and generated prompt](Readmescreenshots/step-0001.png)
-
-### ACE-Step 1.5 music generation
-
-Music is a first-class sidebar workspace. It exposes the two requested XL checkpoints, lyric or instrumental generation, and the audio-specific controls without changing the video workspaces.
-
-![ACE-Step 1.5 Music workspace](Readmescreenshots/step-0005.png)
-
-### Reusable production libraries
-
-Character, wardrobe, and location studios keep reusable references and continuity details in separate libraries that can be brought into movie planning.
-
-![Character Studio reference production](Readmescreenshots/step-0010.png)
-
-![Wardrobe Studio](Readmescreenshots/step-0015.png)
-
-![Location Studio](Readmescreenshots/step-0020.png)
-
-![Movie Planner production bible](Readmescreenshots/step-0026.png)
 
 ## ACE-Step 1.5 setup
 

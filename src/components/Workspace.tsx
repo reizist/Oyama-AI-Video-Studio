@@ -1,0 +1,13 @@
+import { useState, type ReactNode, type ButtonHTMLAttributes } from 'react'
+import { ChevronDown, Maximize2 } from 'lucide-react'
+export function WorkspacePanel({ title, children, actions, className = '', collapsible = false, id }: { title: string; children: ReactNode; actions?: ReactNode; className?: string; collapsible?: boolean; id?: string }) {
+  const [open, setOpen] = useState(true)
+  return <section id={id} className={`studio-panel ${className}`}><header className="studio-panel-heading"><strong>{title}</strong><div>{actions}{collapsible && <button className="icon-button" aria-label={`${open ? 'Collapse' : 'Expand'} ${title}`} aria-expanded={open} onClick={() => setOpen(!open)}><ChevronDown size={16} /></button>}</div></header><div hidden={!open} className="studio-panel-content">{children}</div></section>
+}
+export function PreviewPanel({ children, title = 'Preview', id }: { children: ReactNode; title?: string; id?: string }) {
+ return <WorkspacePanel id={id} title={title} className="studio-preview workspace-preview-panel" collapsible actions={<button className="icon-button" title="Expand preview" aria-label="Expand preview" onClick={event => { const panel = event.currentTarget.closest('section'); if (document.fullscreenElement) void document.exitFullscreen(); else if (panel) void panel.requestFullscreen() }}><Maximize2 size={16}/></button>}>{children}</WorkspacePanel>
+}
+export function StudioButton({ tone = 'secondary', ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { tone?: 'primary' | 'secondary' | 'danger' }) { return <button type="button" {...props} className={`${tone}-button ${props.className || ''}`} /> }
+export function EmptyState({ title, children }: { title: string; children?: ReactNode }) { return <div className="studio-empty"><strong>{title}</strong><div>{children}</div></div> }
+export function FormRow({ label, children }: { label: string; children: ReactNode }) { return <label className="studio-form-row"><span>{label}</span>{children}</label> }
+export function ProductionLoading({ label = 'Preparing references', progress }: { label?: string; progress?: number }) { return <div className="production-loading" role="status"><span className="production-loading-label"><i />{label}</span><div className={`production-loading-track ${progress === undefined ? 'indeterminate' : ''}`} role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress === undefined ? undefined : Math.max(0, Math.min(100, progress))}><i style={progress === undefined ? undefined : { width: `${Math.max(0, Math.min(100, progress))}%` }} /></div><small>{progress === undefined ? 'Working · waiting for engine updates' : `${Math.round(progress)}%`}</small></div> }

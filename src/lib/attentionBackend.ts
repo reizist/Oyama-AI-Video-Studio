@@ -10,6 +10,10 @@ export function resolveAttentionBackend(preference: AttentionBackendPreference, 
   if (preference === 'kitchen') return kitchen
   if (preference === 'sage') return sage
   if (preference === 'native') return native
+  // Sol-Attn is H3-only. For every other model family, keep Comfy Kitchen as
+  // the companion backend when it is available; H3 callers suppress this
+  // generic selection before inserting the dedicated SolAttnH3 patch.
+  if (preference === 'sol') return kitchen
   return kitchen ?? sage ?? native
 }
 

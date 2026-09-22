@@ -20,6 +20,7 @@ export function VideoReferenceClipper({ source, onClose, onCreate }: Props) {
   const [playhead, setPlayhead] = useState(0)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [playbackState, setPlaybackState] = useState<'loading' | 'paused' | 'playing' | 'ended'>('loading')
   const length = Math.max(0, end - start)
   const valid = duration > 0 && length >= 2 && length <= 15 && end <= duration + 0.01
 
@@ -51,19 +52,30 @@ export function VideoReferenceClipper({ source, onClose, onCreate }: Props) {
       </header>
       <div className="video-clipper-body">
         <div className="video-clipper-player">
-          <video key={source.preview} ref={video} src={source.preview} controls playsInline preload="auto" onLoadedMetadata={(event) => {
+          <video key={source.preview} ref={video} src={source.preview} controls playsInline preload="metadata" onLoadStart={() => setPlaybackState('loading')} onLoadedMetadata={(event) => {
             const total = event.currentTarget.duration
             setDuration(total)
             const initialStart = clamp(source.clip?.start ?? 0, 0, Math.max(0, total - 2))
             const initialEnd = clamp(source.clip?.end ?? Math.min(15, total), initialStart + Math.min(2, total), total)
             setStart(initialStart); setEnd(initialEnd); setPlayhead(initialStart); event.currentTarget.currentTime = initialStart
-          }} onLoadedData={() => setError('')} onTimeUpdate={(event) => {
+          }} onLoadedData={() => { setError(''); setPlaybackState((state) => state === 'playing' ? state : 'paused') }} onPlay={(event) => {
+            if (event.currentTarget.currentTime < start || event.currentTarget.currentTime >= end) event.currentTarget.currentTime = start
+            setPlaybackState('playing')
+          }} onPause={() => setPlaybackState((state) => state === 'loading' || state === 'ended' ? state : 'paused')} onEnded={() => setPlaybackState('ended')} onTimeUpdate={(event) => {
             const now = performance.now()
+            if (!event.currentTarget.paused && event.currentTarget.currentTime >= end) {
+              event.currentTarget.pause()
+              event.currentTarget.currentTime = end
+              setPlayhead(end)
+              setPlaybackState('ended')
+              return
+            }
             if (event.currentTarget.paused || now - lastPlayheadUpdate.current >= 100) {
               lastPlayheadUpdate.current = now
               setPlayhead(event.currentTarget.currentTime)
             }
-          }} onError={() => setError('This video cannot be previewed by Electron. Try converting it to MP4 (H.264/AAC) first.')} />
+          }} onError={() => { setPlaybackState('paused'); setError('This video cannot be previewed by Electron. Try converting it to MP4 (H.264/AAC) first.') }} />
+          <div className="video-clipper-playback-status" role="status" aria-live="polite">{playbackState === 'loading' ? 'Loading preview…' : playbackState === 'playing' ? `Playing selection · stops at ${time(end)}` : playbackState === 'ended' ? 'Selection end reached' : 'Preview ready'}</div>
           <div className="video-source-name"><CirclePlay size={14} /><span title={source.name}>{source.name}</span><output>{duration ? time(duration) : 'Reading video…'}</output></div>
         </div>
         <div className="video-clipper-controls">

@@ -1,0 +1,16 @@
+# Workspace UI audit
+
+Baseline: user-provided desktop screenshots from 2026-09-20, plus live Electron checks at a narrow desktop width and maximized desktop width. The Video workspace is the visual reference: compact rails, clear panel hierarchy, blue primary actions, and explicit empty/error guidance.
+
+| Area | Finding | Current pass | Follow-up |
+| --- | --- | --- | --- |
+| Video modes | Consistent inspector and actionable render error; resolution orientation and sampling controls are visible. | Retained the established layout. | TODO(video-ui): test every mode with populated references and an in-progress render; complete when controls, ETA, cancellation, and recovery remain legible at narrow widths. |
+| Characters | New canvas/inspector and older setup form rendered together; navigation overlapped at narrow width. | Established a responsive two-pane canvas/inspector and removed the legacy form from the visible flow; compacted the navigation. | TODO(character-ui): remove the hidden legacy setup markup once every field has an inspector equivalent; complete when no duplicate controls remain in the DOM. |
+| Locations | Large profile form and mostly empty master-prompt panel; long-form editing needs clearer review affordances. | Shared surface and input styling retained. | TODO(location-ui): add a compact prompt summary/review state without reducing editability; complete when populated and empty profiles are usable at narrow width. |
+| Assets / Library | Empty library consumed a large dark surface without a next action. | Added first-run actions to open Video or Movie and a more deliberate empty-state surface. | TODO(library-ui): add poster thumbnails and a useful grid-density control for populated libraries; complete when cards remain fast and scannable with many renders. |
+| Movie | Empty monitor and media pool offered limited orientation; export does not yet represent every visible track. | Clarified the monitor and empty media surfaces. | TODO(movie-editor): add a multitrack compositor honoring gaps, overlays, transforms, titles, and mixed audio; complete when export matches the visible timeline. |
+| Image / Music | Different panel density from Video, especially large blank preview surfaces. | Aligned empty preview treatment with the Video monitor. | TODO(generator-ui): compare loading, success, failure, and disabled states for both generators at narrow width; complete when preview and action controls remain visible without unnecessary scrolling. |
+| Projects | Empty projects view had excessive whitespace and weak grouping. | Tightened dialog spacing and differentiated save and empty areas. | TODO(projects-ui): add an explicit save affordance when projects are opened from non-saveable tools; complete when the next step is clear without relying on explanatory text alone. |
+| Shared | Some controls and labels remain very small in dense screens. | Added focused responsive navigation and canvas rules. | TODO(accessibility): audit keyboard order, focus trapping, screen-reader names, and text scaling across all workspaces; complete with documented shortcut map and interaction tests. |
+
+No render was started during this audit, so GPU-backed generation and output-specific states remain unverified here.

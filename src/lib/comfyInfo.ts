@@ -1,4 +1,7 @@
-export type ObjectInfo = Record<string, { input: { required: Record<string, unknown[]> } }>
+export type ObjectInfo = Record<string, { input: { required: Record<string, unknown[]>; optional?: Record<string, unknown[]> } }>
+export function hasInput(info: ObjectInfo, node: string, field: string) {
+  return Boolean(info[node]?.input.required[field] || info[node]?.input.optional?.[field])
+}
 export function choices(info: ObjectInfo, node: string, field: string): string[] {
   const input = info[node]?.input.required[field]
   if (!input) return []

@@ -1,3 +1,6 @@
+import { compileScene } from './h3SceneCompiler'
+import { bindSceneReferences, createSceneState, value } from './scenePromptState'
+import { stateFromReferenceMap } from './sceneLegacyAdapter'
 import { characterReferences } from './characterLibrary'
 import { fitWholeCharacter } from './imageCrop'
 import { loadWardrobeProjects, wardrobeReferences } from './wardrobeLibrary'
@@ -17,84 +20,12 @@ export const h3PromptDirectionSchema = {
   required: ['summary', 'direction'],
 } as const
 
-export function formatH3PromptOutput(direction: string, summary: string, context: { mode: GenerationMode; duration: number; noDialogue?: boolean; referenceMap?: string[]; request?: string }) {
+export function formatH3PromptOutput(direction: string, _summary: string, context: { mode: GenerationMode; duration: number; noDialogue?: boolean; referenceMap?: string[]; request?: string }) {
   const cleanDirection = normalizePromptDirection(direction)
-  if (!cleanDirection) throw new Error('The local model returned an empty shot direction. Try again with a more specific request.')
-  const suppressVoices = context.noDialogue || /\b(?:no[- ]dialogue|no speech|without (?:any )?(?:speech|dialogue)|no narration|without narration|silent scene)\b/i.test(`${context.request ?? ''}\n${cleanDirection}`)
-  const soundscape = suppressVoices
-    ? 'Only natural ambience and synchronized physical sound effects described in the shot; no speech, narration, singing, lip-sync, captions, or text overlays.'
-    : 'Use only the synchronized ambience, physical sound effects, and dialogue explicitly described in the shot.'
-  const hasMusic = /\b(?:background music|score|soundtrack|music|song)\b/i.test(`${context.request ?? ''}\n${cleanDirection}`)
-  const music = hasMusic
-    ? 'Use only the non-diegetic music explicitly requested in the shot; do not add another score.'
-    : 'N/A'
-  const shot = /^\[Shot\s+1\]/i.test(cleanDirection) ? cleanDirection : `[Shot 1] ${cleanDirection}`
-
-  if (context.mode === 'reference') {
-    const assignments = (context.referenceMap ?? []).map(parseReferenceAssignment).filter((item): item is ReferenceAssignment => Boolean(item))
-    const definitions = formatReferenceDefinitions(assignments)
-    const retention = assignments.length
-      ? assignments.map((item) => `  ${item.source}: ${item.source.startsWith('Picture') ? 'fully_preserved — retain only the attributes assigned in the reference map' : item.source.startsWith('Video') ? 'weak_reference — transfer only the explicitly requested motion or timing qualities' : 'reference — use only the explicitly requested voice or sound qualities'}`).join('\n')
-      : '  N/A'
-    const summaryText = normalizePromptDirection(summary) || 'One coherent target video following the requested shot direction.'
-    const summaryLine = /^\[(?:reference generation)\]/i.test(summaryText) ? summaryText : `[reference generation] ${summaryText}`
-    return [
-      `subject_definitions:\n${definitions}`,
-      `summary: ${summaryLine}`,
-      `retention_analysis:\n${retention}`,
-      `detailed_description: ${shot}`,
-      `overall_soundscape: ${soundscape}`,
-      `non_diegetic_music: ${music}`,
-    ].join('\n\n')
-  }
-
-  const alignment = context.mode === 'image'
-    ? 'For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.'
-    : context.mode === 'frames'
-      ? `For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced; at ${context.duration.toFixed(2)} seconds, <Picture 2> (from [Shot 1]) is fully referenced.`
-      : ''
-  return [
-    alignment,
-    `integrated_multimodal_description: ${shot}`,
-    `overall_soundscape: ${soundscape}`,
-    `non_diegetic_music: ${music}`,
-  ].filter(Boolean).join('\n\n')
-}
-
-type ReferenceAssignment = { source: string; label: string }
-
-function parseReferenceAssignment(entry: string): ReferenceAssignment | null {
-  const [sourceText, ...labelParts] = entry.split(' = ')
-  const source = sourceText?.replace(/[<>]/g, '').trim()
-  const label = labelParts.join(' = ').trim()
-  return source && label ? { source, label } : null
-}
-
-function formatReferenceDefinitions(assignments: ReferenceAssignment[]) {
-  const pictures = assignments.filter((item) => item.source.startsWith('Picture'))
-  const subjects = new Map<string, Array<{ role: string; source: string }>>()
-  pictures.forEach((item, index) => {
-    const character = item.label.match(/^Character:\s*(.+?)(?:\s*\/\s*(.+))?$/i)
-    const characterAsset = item.label.match(/^(Hair|Wardrobe|Accessory|Detail):\s*(.+?)\s+for\s+(.+)$/i)
-    const location = item.label.match(/^Location:\s*(.+)$/i)
-    const [fallbackSubject, ...fallbackRoles] = item.label.split(/\s+\/\s+/)
-    const subject = character?.[1].trim() || characterAsset?.[3].trim() || location?.[1].trim() || fallbackSubject.trim() || `Subject ${index + 1}`
-    const roles = subjects.get(subject) ?? []
-    const explicitRole = character?.[2]?.trim() || (characterAsset ? `${characterAsset[1].toLowerCase()}: ${characterAsset[2].trim()}` : location ? 'location' : fallbackRoles.join(' / ').trim())
-    const role = explicitRole || (roles.length ? `angle ${roles.length + 1}` : 'master')
-    roles.push({ role, source: item.source })
-    subjects.set(subject, roles)
-  })
-  const lines: string[] = []
-  for (const [subject, references] of subjects) {
-    lines.push(`  ${subject}:`)
-    references.forEach(({ role, source }) => lines.push(`    ${role}: ${source}`))
-  }
-  assignments.filter((item) => !item.source.startsWith('Picture')).forEach((item) => {
-    const kind = item.source.startsWith('Video') ? 'motion_reference' : 'sound_reference'
-    lines.push(`  ${kind}: ${item.source} (${item.label})`)
-  })
-  return lines.length ? lines.join('\n') : '  N/A'
+  if (!cleanDirection) throw new Error('The local model returned an empty shot direction.')
+  const state = stateFromReferenceMap(cleanDirection, context.duration, context.mode, context.referenceMap)
+  state.noDialogue = context.noDialogue || false
+  return compileScene(state).prompt
 }
 
 function normalizePromptDirection(value: string) {
@@ -110,9 +41,46 @@ function normalizePromptDirection(value: string) {
 }
 
 const uniqueBindings = (bindings: MovieReferenceBinding[]) => bindings.filter((binding, index) => bindings.findIndex((item) => item.file.path === binding.file.path && item.characterId === binding.characterId && item.purpose === binding.purpose) === index)
-const sentenceKey = (value: string) => value.toLowerCase().replace(/[^a-z0-9<>]+/g, ' ').trim()
 
 type CharacterReferenceInput = { id: string; name: string; identity: MediaFile[]; detailReferences?: CharacterProject['detailReferences']; hairStyleIds?: string[]; wardrobeIds: string[]; accessoryIds?: string[] }
+
+const identityReferencePriority: Record<NonNullable<MediaFile['referenceType']>, number> = {
+  master: 0,
+  face: 1,
+  'full-body': 2,
+  'three-quarter': 3,
+  profile: 4,
+  back: 5,
+  detail: 6,
+  other: 7,
+}
+
+const identityReferenceRole: Record<NonNullable<MediaFile['referenceType']>, string> = {
+  master: 'master identity',
+  face: 'face close-up',
+  'full-body': 'full body',
+  'three-quarter': 'three-quarter view',
+  profile: 'profile view',
+  back: 'back view',
+  detail: 'identity detail',
+  other: 'other angle',
+}
+
+function identityBindings(character: CharacterReferenceInput): MovieReferenceBinding[] {
+  const ordered = character.identity
+    .map((file, index) => ({ file, index }))
+    .sort((left, right) => identityReferencePriority[left.file.referenceType ?? 'other'] - identityReferencePriority[right.file.referenceType ?? 'other'] || left.index - right.index)
+  return ordered.map(({ file }, index) => {
+    const role = identityReferenceRole[file.referenceType ?? 'other']
+    return {
+      file: fitWholeCharacter(file),
+      purpose: (index === 0 ? 'character' : 'character-angle') as MovieReferenceBinding['purpose'],
+      label: `Character: ${character.name} / ${role}`,
+      characterId: character.id,
+      source: 'character-studio' as const,
+    }
+  })
+}
 
 function detailBindings(character: CharacterReferenceInput) {
   return (character.detailReferences ?? []).flatMap((detail) => detail.images.slice(0, 2).map((file, index) => ({
@@ -130,7 +98,7 @@ export function allocateCharacterReferences(characters: CharacterReferenceInput[
   const hairStyles = loadHairStyleProjects()
   const queues = characters.map((character) => ({
     character,
-    identity: character.identity.map((file, index) => ({ file: fitWholeCharacter(file), purpose: (index === 0 ? 'character' : 'character-angle') as MovieReferenceBinding['purpose'], label: `Character: ${character.name} / ${index === 0 ? 'master' : `angle ${index + 1}`}`, characterId: character.id, source: 'character-studio' as const })),
+    identity: identityBindings(character),
     hair: (character.hairStyleIds ?? []).slice(0, 1).flatMap((hairStyleId) => { const hair = hairStyles.find((item) => item.id === hairStyleId); return hair?.referenceImage ? [{ file: hair.referenceImage, purpose: 'hair' as const, label: `Hair: ${hair.name} for ${character.name}`, characterId: character.id, hairStyleId: hair.id, source: 'hair-studio' as const }] : [] }),
     // One outfit per character and render. Combining several assigned wardrobes
     // creates an ambiguous clothing target and causes the model to blend them.
@@ -158,7 +126,7 @@ export function allocateWorkspaceReferences(
   const accessories = loadAccessoryProjects()
   const hairStyles = loadHairStyleProjects()
   const characterQueues = characters.map((character) => ({
-    identity: character.identity.map((file, index) => ({ file: fitWholeCharacter(file), purpose: (index === 0 ? 'character' : 'character-angle') as MovieReferenceBinding['purpose'], label: `Character: ${character.name} / ${index === 0 ? 'master' : `angle ${index + 1}`}`, characterId: character.id, source: 'character-studio' as const })),
+    identity: identityBindings(character),
     hair: (character.hairStyleIds ?? []).slice(0, 1).flatMap((hairStyleId) => { const hair = hairStyles.find((item) => item.id === hairStyleId); return hair?.referenceImage ? [{ file: hair.referenceImage, purpose: 'hair' as const, label: `Hair: ${hair.name} for ${character.name}`, characterId: character.id, hairStyleId: hair.id, source: 'hair-studio' as const }] : [] }),
     wardrobe: character.wardrobeIds.slice(0, 1).flatMap((wardrobeId) => { const wardrobe = wardrobes.find((item) => item.id === wardrobeId); return wardrobe ? wardrobeReferences(wardrobe).map((file) => ({ file: fitWholeCharacter(file), purpose: 'wardrobe' as const, label: `Wardrobe: ${wardrobe.name} for ${character.name}`, characterId: character.id, wardrobeId: wardrobe.id, source: 'wardrobe-studio' as const })) : [] }),
     accessories: (character.accessoryIds ?? []).flatMap((accessoryId) => { const accessory = accessories.find((item) => item.id === accessoryId); return accessory?.referenceImage ? [{ file: accessory.referenceImage, purpose: 'accessory' as const, label: `Accessory: ${accessory.name} for ${character.name}`, characterId: character.id, accessoryId: accessory.id, source: 'accessory-studio' as const }] : [] }),
@@ -198,7 +166,11 @@ export function resolveMovieShotReferences(project: MovieProject, scene: MovieSc
   location?.referenceImages.forEach((file) => bindings.push({ file, purpose: 'location', label: `Location: ${location.name}`, locationId: location.id, locationEnvironmentMode: location.environmentMode, source: 'movie' }))
   shot.referenceImages?.forEach((file) => bindings.push({ file, purpose: 'generic', label: `Shot reference: ${file.name}`, source: 'shot' }))
   if (continuityFrame) bindings.push({ file: continuityFrame, purpose: 'continuity', label: 'Previous-shot continuity frame', source: 'continuity' })
-  return uniqueBindings(bindings)
+  // Keep a deterministic nine-picture budget even when a legacy project or a
+  // user-added shot has more non-character references than MiniMax accepts.
+  // Continuity, cast anchors, and location arrive first; extra generic views
+  // are safely omitted and reported by resolveMovieShot.
+  return uniqueBindings(bindings).slice(0, 9)
 }
 
 export function resolveMovieShotGenerationMode(shot: MovieShot, references: MovieReferenceBinding[]) {
@@ -209,7 +181,14 @@ export function resolveMovieShotGenerationMode(shot: MovieShot, references: Movi
   if (references.some((item) => item.purpose === 'continuity')) return { preferredMode, effectiveMode: 'image' as GenerationMode }
   const hasReferenceMedia = references.some((item) => item.purpose !== 'continuity') || Boolean(shot.referenceVideos?.length || shot.referenceAudios?.length)
   const continuationOnly = references.some((item) => item.purpose === 'continuity') && !hasReferenceMedia
-  return { preferredMode, effectiveMode: (hasReferenceMedia || preferredMode === 'reference' ? 'reference' : continuationOnly ? 'image' : preferredMode) as GenerationMode }
+  const effectiveMode = hasReferenceMedia || preferredMode === 'reference'
+    ? 'reference'
+    : continuationOnly
+      ? 'image'
+      : preferredMode === 'image' || preferredMode === 'frames'
+        ? 'text'
+        : preferredMode
+  return { preferredMode, effectiveMode: effectiveMode as GenerationMode }
 }
 
 export function composeReferenceInstructions(bindings: MovieReferenceBinding[]) {
@@ -224,10 +203,14 @@ export function composeReferenceInstructions(bindings: MovieReferenceBinding[]) 
     const hair = numbered.find((item) => item.characterId === characterId && item.purpose === 'hair')
     const assignedWardrobe = numbered.filter((item) => item.characterId === characterId && item.purpose === 'wardrobe')
     const accessories = numbered.filter((item) => item.characterId === characterId && item.purpose === 'accessory')
-    const mapping = [`identity and body from ${tags}`, hair && `hairstyle from <Picture ${hair.number}>`, assignedWardrobe.length && `complete clothing from ${assignedWardrobe.map((item) => `<Picture ${item.number}>`).join(' and ')}`, accessories.length && `accessories from ${accessories.map((item) => `<Picture ${item.number}>`).join(' and ')}`].filter(Boolean).join('; ')
+    const roleTags = group.map((item) => ({ tag: `<Picture ${item.number}>`, role: item.label.split(' / ')[1] ?? 'identity view' }))
+    const faceTags = roleTags.filter((item) => item.role === 'face close-up').map((item) => item.tag)
+    const bodyTags = roleTags.filter((item) => item.role === 'full body').map((item) => item.tag)
+    const mapping = [`identity and body from ${tags}`, faceTags.length && `facial geometry from ${faceTags.join(' and ')}`, bodyTags.length && `body scale and proportions from ${bodyTags.join(' and ')}`, hair && `hairstyle from <Picture ${hair.number}>`, assignedWardrobe.length && `complete clothing from ${assignedWardrobe.map((item) => `<Picture ${item.number}>`).join(' and ')}`, accessories.length && `accessories from ${accessories.map((item) => `<Picture ${item.number}>`).join(' and ')}`].filter(Boolean).join('; ')
     lines.push(`CHARACTER ASSEMBLY — ${name}: create one unified person using ${mapping}. Apply every source to ${name} only; do not show the source sheets, mannequins, panels, or reference backgrounds in the scene.`)
     const assignedHair = Boolean(hair)
-    lines.push(`${tags} depict ${name}. Use these pictures only for ${name}'s identity, face, skin, ${assignedHair ? 'natural hairline,' : 'hair,'} and body proportions. ${assignedHair ? `Ignore and replace the hairstyle, hair length, texture, styling, and color visible in these identity pictures with ${name}'s assigned hair reference.` : ''} Ignore and replace every garment, accessory, and styling detail visible in these identity pictures.`)
+    const roleGuidance = [faceTags.length && `Use ${faceTags.join(' and ')} specifically for ${name}'s face shape, eyes, nose, mouth, skin, and facial proportions.`, bodyTags.length && `Use ${bodyTags.join(' and ')} specifically for ${name}'s full silhouette, height impression, build, limbs, and body proportions.`].filter(Boolean).join(' ')
+    lines.push(`${tags} depict ${name}. Use these pictures only for ${name}'s identity, face, skin, ${assignedHair ? 'natural hairline,' : 'hair,'} and body proportions. ${roleGuidance} ${assignedHair ? `Ignore and replace the hairstyle, hair length, texture, styling, and color visible in these identity pictures with ${name}'s assigned hair reference.` : ''} Ignore and replace every garment, accessory, and styling detail visible in these identity pictures.`)
   }
   const hairGroups = new Map<string, typeof numbered>()
   for (const binding of numbered.filter((item) => item.purpose === 'hair' && item.characterId)) hairGroups.set(binding.characterId!, [...(hairGroups.get(binding.characterId!) ?? []), binding])
@@ -262,27 +245,42 @@ export function composeReferenceInstructions(bindings: MovieReferenceBinding[]) 
       : `${tags} depict the approved ${name} location. Preserve its architecture, layout, materials, lighting, landmarks, atmosphere, and spatial geography.`) + ` ${context}${accuracy}`)
   }
   for (const binding of numbered.filter((item) => item.purpose === 'continuity')) lines.push(`Continue the framing, lighting, pose, screen direction, and motion state shown in <Picture ${binding.number}>.`)
-  for (const binding of numbered.filter((item) => item.purpose === 'generic')) lines.push(`Use <Picture ${binding.number}> as ${binding.label.replace(/^Shot reference:\s*/, 'the visual reference for ')}.`)
+  for (const binding of numbered.filter((item) => item.purpose === 'generic')) lines.push(binding.file.openingFrameTreatment === 'reframe'
+    ? `<Picture ${binding.number}> is the visual and spatial opening reference. Preserve its environment, lighting, spatial relationships, and initial subject placement while intentionally changing only the camera viewpoint specified in the detailed description.`
+    : binding.file.openingFrameTreatment === 'arc'
+      ? `<Picture ${binding.number}> defines the opening composition and spatial state. Preserve that opening state, then perform only the requested smooth camera arc after it is established.`
+      : binding.file.referenceRetention === 'preserve'
+        ? `Use <Picture ${binding.number}> as ${binding.label.replace(/^Shot reference:\s*/, 'the authoritative visual reference for ')}. Preserve only its assigned role exactly; do not copy unrelated subjects, clothing, objects, or background details.`
+        : `Use <Picture ${binding.number}> as ${binding.label.replace(/^Shot reference:\s*/, 'the visual reference for ')}. Treat it as guidance only and do not copy unrelated details.`)
   return lines
 }
 
+export function movieShotSceneState(project: MovieProject, scene: MovieScene, shot: MovieShot, bindings: MovieReferenceBinding[]) {
+  const route = resolveMovieShotGenerationMode(shot, bindings)
+  const frame = bindings.find(binding => binding.purpose === 'continuity')?.file
+  let state = shot.sceneState || createSceneState(shot.prompt, shot.duration, route.effectiveMode)
+  state = bindSceneReferences({ ...state, mode: route.effectiveMode }, bindings.filter(binding => binding.purpose !== 'continuity'), shot.referenceVideos, shot.referenceAudios, frame)
+  const location = project.locations.find(item => item.id === scene.locationId)
+  const cast = project.characters.filter(item => shot.characterIds.includes(item.id))
+  for (const character of cast) {
+    const existing = state.characters.find(item => item.id === character.id)
+    const attributes = { identity: value(character.description, 'PROJECT'), wardrobe: value(character.wardrobe, 'PROJECT'), ...existing?.attributes }
+    state.characters = [...state.characters.filter(item => item.id !== character.id), { id: character.id, name: character.name, attributes }]
+  }
+  if (!state.environment.value && location) state.environment = value([location.name, location.description].filter(Boolean).join('. '), 'PROJECT')
+  if (!state.styles.length && project.visualStyle) state.styles = [value(project.visualStyle, 'PROJECT')]
+  state.continuity = { ...state.continuity, scene: true, exactFrame: !!frame, notes: state.continuity.notes.value ? state.continuity.notes : value(project.visualRules || '', 'PROJECT') }
+  if (shot.dialogue && !state.dialogue.length) state.dialogue = [{ id: 'movie-dialogue', shotId: state.shots[0].id, at: 0, speakerIds: cast.length === 1 ? [cast[0].id] : [], language: 'English', delivery: cast[0]?.voiceNotes || '', text: shot.dialogue }]
+  return state
+}
+
 export function compileMovieShotPrompt(project: MovieProject, scene: MovieScene, shot: MovieShot, bindings: MovieReferenceBinding[]) {
-  const location = project.locations.find((item) => item.id === scene.locationId)
-  const parts = [shot.prompt.trim()]
-  if (location && !sentenceKey(shot.prompt).includes(sentenceKey(location.name))) parts.push(`Environment: ${location.name}. ${location.description}`)
-  if (project.visualStyle) parts.push(`Visual treatment: ${project.visualStyle}`)
-  if (project.visualRules) parts.push(`Continuity: ${project.visualRules}`)
-  if (shot.dialogue && !shot.prompt.includes(shot.dialogue)) parts.push(`Dialogue: "${shot.dialogue}"`)
-  parts.push(...composeReferenceInstructions(bindings))
-  shot.referenceVideos?.forEach((file, index) => parts.push(`Use <Video ${index + 1}> (${file.name}) as the motion and temporal reference.`))
-  shot.referenceAudios?.forEach((file, index) => parts.push(`Use <Audio ${index + 1}> (${file.name}) as the voice, performance, and sound reference.`))
-  const seen = new Set<string>()
-  return parts.filter(Boolean).filter((part) => { const key = sentenceKey(part); if (!key || seen.has(key)) return false; seen.add(key); return true }).join(' ')
+  return compileScene(movieShotSceneState(project, scene, shot, bindings)).prompt
 }
 
 export function buildPromptAssistantRequest(tool: PromptAssistantTool, draft: string, context: { duration: number; mode: GenerationMode; referenceMap?: string[]; noDialogue?: boolean }) {
   const preservation = 'Preserve named characters, exact quoted dialogue, visible text, specified camera and lens choices, timing, negative constraints, continuity instructions, and every existing <Picture N>, <Video N>, and <Audio N> assignment. Treat the supplied reference map as authoritative: define what each source contributes and never swap, merge, renumber, or vaguely refer to sources. Never rename characters, invent replacement wardrobe, remove reference tags, add unnecessary cuts, or turn one continuous shot into a montage. Do not make reference images, sheets, mannequins, panels, or their backgrounds visible unless the draft explicitly requests them.'
-  const order = 'Use concrete, observable production language in English, preserving only dialogue, lyrics, and visible on-screen text in their original language. For each shot establish visual style and composition, subjects and their starting state, environment and lighting, chronological action and state change, then camera movement as a natural action using motion type plus amplitude and speed only when useful, synchronized diegetic sound, and exact dialogue. Use [Shot 1] with no timestamp; only explicit later cuts may use [Shot N] At MM:SS.mmm with strictly increasing times inside the requested duration. Prefer a camera move to a cut when the scene has not meaningfully changed. Give speakers stable (S1), (S2) IDs and put only verbatim dialogue in <d>[Language] ...</d>.'
+  const order = 'Use concrete filmmaking language in English; preserve quoted dialogue and visible text in their original language. Describe visible action, environment, camera motion and audible events. Do not emit H3 sections, reference tokens, shot tags, speaker IDs or dialogue markup: the deterministic Scene Compiler owns those. Write dialogue as Character says, "exact words". Do not infer an opening frame from a Preserve reference. Physical backward camera travel is Pull Out, not Zoom Out.'
   const format = 'Return only a concise, complete shot direction as plain text in the JSON direction field. Do not write JSON, Markdown fences, section labels, a preface, alternatives, or duplicate drafts. The app will add the fixed MiniMax H3 sections and reference assignments.'
   const adherence = 'Follow the authored draft literally. When asked only to enhance it, preserve every named subject, action, relationship, setting, wardrobe instruction, camera choice, timing, sound, and negative constraint; improve clarity and concrete observability without replacing the scene with generic cinematic language or adding new story facts. For an explicit requested change, apply that change first and preserve all unaffected details.'
   const task = tool === 'enhance'
@@ -294,7 +292,20 @@ export function buildPromptAssistantRequest(tool: PromptAssistantTool, draft: st
 }
 
 export function resolveMovieShot(project: MovieProject, scene: MovieScene, shot: MovieShot, library: CharacterProject[], continuityFrame?: MediaFile): ResolvedMovieShot {
-  const all = resolveMovieShotReferences(project, scene, shot, library, continuityFrame)
+  const allCandidates = (() => {
+    const bindings: MovieReferenceBinding[] = []
+    const wardrobes = loadWardrobeProjects()
+    const cast = project.characters.filter((item) => shot.characterIds.includes(item.id))
+    const inputs = cast.map((character) => { const source = character.libraryCharacterId ? library.find((item) => item.id === character.libraryCharacterId) : undefined; return { id: character.id, name: character.name, identity: source ? characterReferences(source) : character.referenceImages, detailReferences: source?.detailReferences, hairStyleIds: source?.hairStyleIds ?? [], wardrobeIds: source?.wardrobeIds ?? [], accessoryIds: source?.accessoryIds ?? [] } })
+    const location = project.locations.find((item) => item.id === scene.locationId)
+    const nonCharacterCount = (location?.referenceImages.length ?? 0) + (shot.referenceImages?.length ?? 0) + Number(Boolean(continuityFrame))
+    bindings.push(...allocateCharacterReferences(inputs, wardrobes, Math.max(0, 9 - nonCharacterCount)))
+    location?.referenceImages.forEach((file) => bindings.push({ file, purpose: 'location', label: `Location: ${location.name}`, locationId: location.id, locationEnvironmentMode: location.environmentMode, source: 'movie' }))
+    shot.referenceImages?.forEach((file) => bindings.push({ file, purpose: 'generic', label: `Shot reference: ${file.name}`, source: 'shot' }))
+    if (continuityFrame) bindings.push({ file: continuityFrame, purpose: 'continuity', label: 'Previous-shot continuity frame', source: 'continuity' })
+    return uniqueBindings(bindings)
+  })()
+  const all = allCandidates.slice(0, 9)
   const continuationOnly = all.some((item) => item.purpose === 'continuity')
   // The source frame is loaded as I2V's actual first_frame, not as a numbered
   // Ref2V asset. Exclude the other references here so no <Picture N> text can
@@ -302,8 +313,9 @@ export function resolveMovieShot(project: MovieProject, scene: MovieScene, shot:
   const references = continuationOnly ? all.filter((item) => item.purpose === 'continuity') : all.slice(0, 9)
   const route = resolveMovieShotGenerationMode(shot, references)
   const characterNames = [...new Set(references.filter((item) => item.characterId && (item.purpose === 'character' || item.purpose === 'character-angle')).map((item) => item.label.replace(/^Character:\s*/, '').split(' / ')[0]))]
-  const routeReason = continuationOnly ? 'Exact continuation selected: the prior shot’s final frame is hard-pinned as this shot’s I2V opening frame.' : route.effectiveMode === 'reference' && characterNames.length ? `Reference mode selected automatically because ${characterNames.join(' and ')} ${characterNames.length === 1 ? 'has' : 'have'} approved references.` : route.effectiveMode === 'reference' ? 'Reference mode selected because this shot has reusable reference media.' : `Using the preferred ${route.effectiveMode} route.`
-  const compiledBindings = continuationOnly ? [] : route.effectiveMode === 'reference' ? references : references.filter((item) => item.purpose !== 'continuity')
-  const continuationDirection = route.effectiveMode === 'image' && references.some((item) => item.purpose === 'continuity') ? ' Continue directly from the supplied first frame, preserving its framing, lighting, pose, screen direction, and motion state.' : ''
-  return { ...route, references, omittedReferences: continuationOnly ? [] : all.slice(9), compiledPrompt: `${compileMovieShotPrompt(project, scene, shot, compiledBindings)}${continuationDirection}`, routeReason }
+  const routeReason = continuationOnly ? 'Exact continuation selected: the prior shot’s final frame is hard-pinned as this shot’s I2V opening frame.' : route.effectiveMode === 'reference' && characterNames.length ? `Reference mode selected automatically because ${characterNames.join(' and ')} ${characterNames.length === 1 ? 'has' : 'have'} approved references.` : route.effectiveMode === 'reference' ? 'Reference mode selected because this shot has reusable reference media.' : route.effectiveMode !== route.preferredMode ? `No approved frame input is assigned, so the guided runner safely falls back from ${route.preferredMode} to text-to-video.` : `Using the preferred ${route.effectiveMode} route.`
+  const sceneState = movieShotSceneState(project, scene, { ...shot, mode: route.effectiveMode }, references)
+  const compiled = compileScene(sceneState)
+  return { ...route, references, omittedReferences: continuationOnly ? allCandidates.filter(item => item.purpose !== 'continuity') : allCandidates.slice(9), compiledPrompt: compiled.prompt, sceneState, conflicts: compiled.conflicts, routeReason }
+
 }

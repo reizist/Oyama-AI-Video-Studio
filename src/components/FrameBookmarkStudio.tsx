@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Bookmark, Check, Clock3, FolderOpen, Image as ImageIcon, LoaderCircle, Play, Plus, Save, Trash2, X } from 'lucide-react'
 import type { AppSettings, MediaFile } from '../types'
 import { createId } from '../lib/createId'
+import { ReliableVideo } from './ReliableVideo'
 
 export type BookmarkVideo = { id: string; name: string; source: string; duration?: number; provider?: 'minimax' | 'ltx25' }
 type FrameBookmark = { id: string; label: string; time: number; frame?: MediaFile }
@@ -52,7 +53,7 @@ export function FrameBookmarkStudio({ initialVideo, videos, settings, onClose, o
   const hydrationProjects = useRef(projects)
   const [currentTime, setCurrentTime] = useState(0)
   const [busy, setBusy] = useState<string | null>(null)
-  const videoRef = useRef<HTMLVideoElement>(null)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
   const active = projects.find((project) => project.id === activeId) ?? projects[0]
   const duration = Math.max(.01, active?.duration ?? 0)
   const savedFrames = useMemo(() => projects.flatMap((project) => project.bookmarks.filter((bookmark) => bookmark.frame).map((bookmark) => ({ project, bookmark, frame: bookmark.frame! }))).sort((a, b) => b.project.updatedAt - a.project.updatedAt), [projects])
@@ -139,7 +140,7 @@ export function FrameBookmarkStudio({ initialVideo, videos, settings, onClose, o
         <div className="frame-source-toolbar"><label>Source video<select value={active.id} onChange={(event) => { const video = videos.find((item) => item.id === event.target.value); if (video) selectVideo(video); else setActiveId(event.target.value) }}>{[...videos, ...projects.filter((project) => !videos.some((video) => video.id === project.id))].map((video) => <option key={video.id} value={video.id}>{video.name}</option>)}</select></label><button className="secondary-button" onClick={() => void chooseLocal()}><FolderOpen size={14} />Choose another video</button></div>
         <div className="frame-bookmark-workspace">
           <section className="frame-viewer">
-            <div className="frame-video-stage"><video ref={videoRef} key={active.source} src={active.source} controls playsInline preload="metadata" onLoadedMetadata={(event) => { const nextDuration = event.currentTarget.duration; if (Number.isFinite(nextDuration)) patchProject(active.id, (project) => ({ ...project, duration: nextDuration })) }} onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)} /></div>
+            <div className="frame-video-stage"><ReliableVideo videoRef={node => { videoRef.current = node }} src={active.source} controls playsInline preload="metadata" onLoadedMetadata={(event) => { const nextDuration = event.currentTarget.duration; if (Number.isFinite(nextDuration)) patchProject(active.id, (project) => ({ ...project, duration: nextDuration })) }} onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)} /></div>
             <div className="bookmark-timeline"><div><span><Clock3 size={13} />{timecode(currentTime)}</span><span>{timecode(duration)}</span></div><input aria-label="Frame position" type="range" min="0" max={duration} step={1 / 24} value={Math.min(currentTime, duration)} onChange={(event) => seek(Number(event.target.value))} />{active.bookmarks.map((bookmark) => <button key={bookmark.id} style={{ left: `${Math.min(100, (bookmark.time / duration) * 100)}%` }} onClick={() => seek(bookmark.time)} aria-label={`Seek to ${bookmark.label} at ${timecode(bookmark.time)}`} title={`${bookmark.label} · ${timecode(bookmark.time)}`}><span /></button>)}</div>
             <div className="frame-viewer-actions"><span><strong>{active.name}</strong><small>{active.provider === 'ltx25' ? 'LTX 2.5 render' : active.provider === 'minimax' ? 'MiniMax H3 render' : 'Local video'} · {active.bookmarks.length} bookmark{active.bookmarks.length === 1 ? '' : 's'}</small></span><button className="primary-button" onClick={addBookmark}><Plus size={15} />Add bookmark here</button></div>
           </section>

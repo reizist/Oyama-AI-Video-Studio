@@ -18,9 +18,14 @@ const settings: AppSettings = {
     clip_vision: `${modelRoot}\\clip_vision`,
   },
   outputDirectory: 'C:\\Users\\James\\Documents\\ComfyUI\\output',
+  clipMasterOutputDirectory: 'C:\\Users\\James\\Documents\\ComfyUI\\output\\video',
   ffmpegPath: 'C:\\FFMPEG\\bin\\ffmpeg.exe',
   uiScale: 100,
   attentionBackend: 'automatic',
+  solAttnTau: 1,
+  solCacheEnabled: true,
+  h3DiffusionPrecision: 'int8',
+  gpuRouting: { preset: 'automatic', strategy: 'sequential', diffusion: 'auto', textEncoder: 'auto', videoVae: 'auto', audioVae: 'auto', previewVae: 'auto', allowOvercommit: false, preloadDiffusionDuringTextEncoding: false },
   h3ParallelAttentionEnabled: false,
   experimentalLtxMsrEnabled: false,
   blurNsfwLivePreviews: false,
@@ -30,13 +35,16 @@ const settings: AppSettings = {
   generationDefaults: {
     resolution: '1344x768', duration: 5, turbo: 'off', steps: 30,
     sampler: 'res_multistep', scheduler: 'simple', experimentalSampling: false,
-    refImageSize: 'match', livePreview: true, sigmaShiftMode: 'model', shiftVideo: 12, shiftAudio: 3, loraStrength: 1, upscaleMode: 'off', textEncoderPreference: 'fast', turbo8Profile: 'balanced',
+    refImageSize: 'match', livePreview: true, sigmaShiftMode: 'model', shiftVideo: 12, shiftAudio: 3, loraStrength: 1, upscaleMode: 'refine', textEncoderPreference: 'fast', turbo8Profile: 'balanced',
   },
 }
 
 const examples: Array<[ModelFile['kind'], string, number]> = [
   ['diffusion_models', 'minimax_h3_fl2va_pruned_int8_convrot.safetensors', 20_970_379_616],
   ['diffusion_models', 'minimax_h3_ref2va_pruned_int8_convrot.safetensors', 20_970_379_616],
+  ['diffusion_models', 'minimax_h3_fl2va_pruned_nvfp4.safetensors', 12_500_000_000],
+  ['diffusion_models', 'minimax_h3_ref2va_pruned_nvfp4.safetensors', 12_500_000_000],
+  ['diffusion_models', 'fastvideo_fasth3_8step_v2_pruned_int8_convrot.safetensors', 22_100_000_000],
   ['text_encoders', 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors', 15_687_142_551],
   ['text_encoders', 'qwen3vl_32b_minimax_h3_int8_convrot.safetensors', 27_100_000_000],
   ['vae', 'minimax_h3_video_vae_fp16.safetensors', 5_207_808_496],
@@ -72,10 +80,14 @@ export function installBrowserMock() {
       ...ltxNodes.map((name) => [name, { input: { required: {} } }]),
       ['LTX2SamplingPreviewOverride', { input: { required: {} } }],
       ...aceNodes.map((name) => [name, { input: { required: {} } }]),
+      ['MinimaxH3LatentUpscaler3D', { input: { required: { model_name: ['COMBO', { options: ['minimax_h3_latent_upscaler_3d_fp16.safetensors'] }] } } }],
       ['LatentUpscaleModelLoader', { input: { required: { model_name: ['COMBO', { options: ['ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors'] }] } } }],
       ['UNETLoader', { input: { required: { unet_name: ['COMBO', { options: ['z_image_turbo_bf16.safetensors', 'z_image_bf16.safetensors', 'acestep_v1.5_xl_sft_bf16.safetensors', 'acestep_v1.5_xl_base_bf16.safetensors'] }] } } }],
       ['CLIPLoader', { input: { required: { clip_name: ['COMBO', { options: ['qwen_3_4b.safetensors'] }] } } }],
       ['VAELoader', { input: { required: { vae_name: ['COMBO', { options: ['ltx-2.5-video-vae-bf16.safetensors', 'ae.safetensors', 'ace_1.5_vae.safetensors'] }] } } }],
+      ['SelectModelDevice', { input: { required: { model: ['MODEL'], device: [['default', 'cpu', 'gpu:0', 'gpu:1']] } } }],
+      ['SelectCLIPDevice', { input: { required: { clip: ['CLIP'], device: [['default', 'cpu', 'gpu:0', 'gpu:1']] } } }],
+      ['SelectVAEDevice', { input: { required: { vae: ['VAE'], device: [['default', 'gpu:0', 'gpu:1']] } } }],
       ['UpscaleModelLoader', { input: { required: { model_name: ['COMBO', { options: ['4x-UltraSharp.pth'] }] } } }],
     ]),
     uploadImageData: async () => { throw new Error('Open the desktop app to upload images.') },
@@ -85,12 +97,22 @@ export function installBrowserMock() {
     getSettings: async () => current,
     getLegacyMigrationStatus: async () => ({ available: false, migrated: false, needsBrowserStorageRepair: false }),
     migrateLegacyData: async () => ({ available: false, migrated: false, needsBrowserStorageRepair: false }),
-    getGpuTelemetry: async () => ({ available: true, name: 'Preview GPU', usagePercent: 38, vramPercent: 62, vramUsedMb: 14880, vramTotalMb: 24000 }),
+    getGpuTelemetry: async () => ({ available: true, name: 'NVIDIA GeForce RTX 3090', usagePercent: 38, vramPercent: 62, vramUsedMb: 14880, vramTotalMb: 24000, devices: [{ index: 0, name: 'NVIDIA GeForce RTX 3090', usagePercent: 38, vramPercent: 62, vramUsedMb: 14880, vramTotalMb: 24000, vramFreeMb: 9120 }, { index: 1, name: 'NVIDIA GeForce RTX 5060 Ti', usagePercent: 4, vramPercent: 18, vramUsedMb: 2880, vramTotalMb: 16000, vramFreeMb: 13120 }] }),
+    getRenderBenchmarks: async () => [],
+    saveRenderBenchmarks: async (benchmarks) => benchmarks,
     saveSettings: async (next) => (current = next),
+    factoryResetSettings: async (confirmation) => {
+      if (confirmation !== 'Reset') throw new Error('Type Reset exactly to confirm factory reset.')
+      current = structuredClone(settings)
+      localStorage.clear()
+      location.reload()
+    },
     exportWorkflowJson: async (suggestedName) => `C:\\Users\\James\\Documents\\${suggestedName}`,
     setUiScale: async (scale) => Math.round(Math.max(.75, Math.min(1.5, scale)) * 100),
+    openDevTools: async () => { throw new Error('Developer tools are available in the Electron desktop app.') },
     chooseDirectory: async () => null,
     chooseMedia: async () => null,
+    chooseVideos: async () => [],
     scanModels: async () => examples.map(([kind, name, bytes]) => ({ kind, name, bytes, path: `${current.paths[kind]}\\${name}` })),
     getComfyStatus: async () => ({ connected: false, latencyMs: 2, error: 'Preview mode' }),
     submitPrompt: async () => { throw new Error('Desktop bridge is unavailable in browser preview.') },
@@ -100,9 +122,16 @@ export function installBrowserMock() {
     uploadInput: async () => { throw new Error('Desktop bridge is unavailable in browser preview.') },
     fileDataUrl: async () => '',
     mediaUrl: async (path) => path,
+    validateMediaFiles: async (files) => files.map((file) => ({ path: file.path, valid: true })),
     extractVideoFrame: async () => { throw new Error('Open the desktop app to extract video frames.') },
+    getVideoThumbnail: async () => { throw new Error('Open the desktop app to create persistent video thumbnails.') },
     extractVideoFrames: async () => { throw new Error('Open the desktop app to extract video frames.') },
     trimVideo: async () => { throw new Error('Open the desktop app to trim reference videos.') },
+    getVideoMetadata: async () => { throw new Error('Open the desktop app to inspect video metadata.') },
+    extractClipMasterFrames: async () => { throw new Error('Open the desktop app to extract Clip Master frames.') },
+    chooseClipMasterExportPath: async () => { throw new Error('Open the desktop app to choose a Clip Master export location.') },
+    trimClipMaster: async () => { throw new Error('Open the desktop app to export Clip Master clips.') },
+    spliceClipMaster: async () => { throw new Error('Open the desktop app to export a sequence.') },
     joinVideos: async () => { throw new Error('Open the desktop app to join videos.') },
     getRifeStatus: async () => ({ installed: false }),
     installRife: async () => ({ installed: false, error: 'Open the desktop app to install RIFE.' }),
@@ -111,12 +140,12 @@ export function installBrowserMock() {
     trashOutput: async () => { throw new Error('Open the desktop app to move output files to Trash.') },
     findLatestOutput: async () => null,
     resolveOutput: async () => null,
-    listOllamaModels: async (_url, provider = 'ollama') => provider === 'lmstudio'
+    getLocalLlmStatus: async (_url, provider = 'ollama') => ({ connected: true, models: provider === 'lmstudio'
       ? [{ name: 'local-vision-model', size: 0, family: 'lmstudio', parameterSize: '', local: true }]
       : [
         { name: 'qwen3:latest', size: 5_225_388_164, family: 'qwen3', parameterSize: '8.2B', local: true },
         { name: 'llama3.1:8b', size: 4_920_753_328, family: 'llama', parameterSize: '8.0B', local: true },
-      ],
+      ] }),
     generateWithOllama: async () => 'A cinematic wide shot with deliberate subject motion, controlled camera movement, natural lighting, and synchronized environmental audio.',
     generateWithOllamaVision: async () => 'A MiniMax-ready prompt grounded in the visible identity, composition, lighting, and continuity details of the supplied reference images.',
     generateStructuredWithOllama: async (_url, _model, prompt, schema) => {
@@ -163,8 +192,8 @@ export function installBrowserMock() {
           projectPatch: {
             title: currentProject.title ?? 'Untitled movie', targetRuntime: currentProject.targetRuntime ?? 60,
             computeBudgetMinutes: currentProject.computeBudgetMinutes ?? 120, aspectRatio: currentProject.aspectRatio ?? '16:9',
-            genre: currentProject.genre ?? '', visualStyle: currentProject.visualStyle ?? '', quality: currentProject.quality ?? 'balanced',
-            reviewGate: currentProject.reviewGate ?? 'scene', story: buildStory ? 'A courier crosses a flooded city before sunrise, carrying the final radio capable of reconnecting the evacuation fleet. Pursued across collapsing rooftops, she reaches the harbor tower and transmits just as dawn breaks.' : currentProject.story ?? '', visualRules: currentProject.visualRules ?? '',
+            genre: currentProject.genre ?? '', visualStyle: currentProject.visualStyle ?? '',
+            story: buildStory ? 'A courier crosses a flooded city before sunrise, carrying the final radio capable of reconnecting the evacuation fleet. Pursued across collapsing rooftops, she reaches the harbor tower and transmits just as dawn breaks.' : currentProject.story ?? '', visualRules: currentProject.visualRules ?? '',
           },
           characterUpserts: buildAssets ? [{ id: 'new-mara', name: 'Mara Vale', description: 'A weathered pilot in her late thirties with cropped black hair and a narrow scar above her left eyebrow.', wardrobe: 'Faded charcoal flight jacket, rust-red scarf, utility belt, brass compass.', voiceNotes: 'Low warm alto with a measured pace.' }] : [], characterDeletes: removedCharacter ? [removedCharacter.id] : [],
           locationUpserts: buildAssets ? [{ id: 'new-relay', name: 'North Relay Station', description: 'An isolated concrete relay station with oxidized antenna ribs, amber work lights, and a cracked blue orientation stripe.' }] : [], locationDeletes: [],
@@ -180,6 +209,10 @@ export function installBrowserMock() {
     syncMobileCharacters: async (characters) => ({ synced: characters.length }),
     rotateLanToken: async () => ({ running: true, url: `${location.origin}/?mobile=1&token=browser-preview`, desktopUrl: `${location.origin}/?desktop=1&token=browser-preview`, port: Number(location.port) }),
     setWindowAlwaysOnTop: async (enabled) => enabled,
+    openStudio: async () => { if (window.opener && !window.opener.closed) window.opener.focus(); else window.open(location.pathname, 'oyama-studio') },
+    openMovieEditor: async () => { window.open(`${location.pathname}?movieEditor=1`, 'oyama-ai-movie', 'popup=yes,width=1440,height=920,resizable=yes') },
+    exportVideo: async () => { throw new Error('Video export requires the desktop app.') },
+    prepareContinuationSource: async (sources) => sources[0],
   }
   window.minimax = api
 }

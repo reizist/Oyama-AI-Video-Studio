@@ -1,5 +1,5 @@
 import type { AceStepGenerationOptions, AceStepModelSelection, ModelFile } from '../types'
-import type { ComfyPrompt } from './workflow'
+import { addRoutedLoader, type ComfyPrompt } from './workflow'
 
 export const ACE_STEP_REQUIRED_NODES = [
   'UNETLoader', 'DualCLIPLoader', 'VAELoader', 'TextEncodeAceStepAudio1.5',
@@ -24,16 +24,18 @@ export function inferAceStepSelections(models: ModelFile[]): AceStepModelSelecti
 export function buildAceStepWorkflow(options: AceStepGenerationOptions, models: AceStepModelSelection): ComfyPrompt {
   const diffusion = options.model === 'sft' ? models.sft : models.base
   const lyrics = options.instrumental ? '[Instrumental]' : options.lyrics.trim()
-  const model: [string, number] = options.attentionBackend ? ['85', 0] : ['1', 0]
-  return {
-    '1': { class_type: 'UNETLoader', inputs: { unet_name: diffusion, weight_dtype: 'default' } },
-    ...(options.attentionBackend ? { '85': { class_type: 'ModelAttentionBackend', inputs: { model: ['1', 0], attention: options.attentionBackend } } } : {}),
-    '2': { class_type: 'DualCLIPLoader', inputs: { clip_name1: models.textEncoderSmall, clip_name2: models.textEncoderLarge, type: 'ace', device: 'default' } },
-    '3': { class_type: 'VAELoader', inputs: { vae_name: models.vae } },
+  const graph: ComfyPrompt = {}
+  const modelBaseLink = addRoutedLoader(graph, '1', 'UNETLoader', { unet_name: diffusion, weight_dtype: 'default' }, options.gpuRouting?.diffusion, '801')
+  const clipRoute = options.gpuRouting?.textEncoder ? { ...options.gpuRouting.textEncoder, nodeType: options.gpuRouting.textEncoder.nodeType === 'CLIPLoaderMultiGPU' ? 'DualCLIPLoaderMultiGPU' : options.gpuRouting.textEncoder.nodeType } : undefined
+  const clipLink = addRoutedLoader(graph, '2', 'DualCLIPLoader', { clip_name1: models.textEncoderSmall, clip_name2: models.textEncoderLarge, type: 'ace', device: 'default' }, clipRoute, '802')
+  const vaeLink = addRoutedLoader(graph, '3', 'VAELoader', { vae_name: models.vae }, options.gpuRouting?.audioVae, '803')
+  const model: [string, number] = options.attentionBackend ? ['85', 0] : modelBaseLink
+  Object.assign(graph, {
+    ...(options.attentionBackend ? { '85': { class_type: 'ModelAttentionBackend', inputs: { model: modelBaseLink, attention: options.attentionBackend } } } : {}),
     '4': {
       class_type: 'TextEncodeAceStepAudio1.5',
       inputs: {
-        clip: ['2', 0], tags: options.tags.trim(), lyrics, seed: options.seed,
+        clip: clipLink, tags: options.tags.trim(), lyrics, seed: options.seed,
         bpm: options.bpm, duration: options.duration, timesignature: options.timeSignature,
         language: options.language, keyscale: options.keyScale, generate_audio_codes: options.generateAudioCodes,
         cfg_scale: 2, temperature: 0.85, top_p: 1, top_k: 0, min_p: 0,
@@ -50,7 +52,8 @@ export function buildAceStepWorkflow(options: AceStepGenerationOptions, models: 
         sampler_name: 'euler', scheduler: 'simple', denoise: 1,
       },
     },
-    '9': { class_type: 'VAEDecodeAudio', inputs: { samples: ['8', 0], vae: ['3', 0] } },
+    '9': { class_type: 'VAEDecodeAudio', inputs: { samples: ['8', 0], vae: vaeLink } },
     '10': { class_type: 'SaveAudioAdvanced', inputs: { audio: ['9', 0], filename_prefix: options.filenamePrefix, format: 'flac' } },
-  }
+  })
+  return graph
 }

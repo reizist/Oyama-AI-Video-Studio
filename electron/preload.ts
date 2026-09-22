@@ -1,5 +1,15 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
+async function invokeLocalLlm(channel: string, ...args: unknown[]) {
+  try {
+    return await ipcRenderer.invoke(channel, ...args)
+  } catch (cause) {
+    const raw = cause instanceof Error ? cause.message : String(cause)
+    const message = raw.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/i, '').trim()
+    throw new Error(message || 'The local AI provider request failed.')
+  }
+}
+
 contextBridge.exposeInMainWorld('minimax', {
   getObjectInfo: (url: string) => ipcRenderer.invoke('comfy:info', url),
   uploadImageData: (url: string, data: string) => ipcRenderer.invoke('comfy:upload-data', url, data),
@@ -10,11 +20,15 @@ contextBridge.exposeInMainWorld('minimax', {
   getLegacyMigrationStatus: () => ipcRenderer.invoke('migration:legacy-status'),
   migrateLegacyData: (replaceBrowserStorage = false) => ipcRenderer.invoke('migration:run', replaceBrowserStorage),
   getGpuTelemetry: () => ipcRenderer.invoke('system:gpu-telemetry'),
+  getRenderBenchmarks: () => ipcRenderer.invoke('render-benchmarks:get'),
+  saveRenderBenchmarks: (benchmarks: unknown[]) => ipcRenderer.invoke('render-benchmarks:save', benchmarks),
   saveSettings: (settings: unknown) => ipcRenderer.invoke('settings:save', settings),
+  factoryResetSettings: (confirmation: string) => ipcRenderer.invoke('settings:factory-reset', confirmation),
   exportWorkflowJson: (suggestedName: string, workflow: unknown) => ipcRenderer.invoke('workflow:export-json', suggestedName, workflow),
   setUiScale: (scale: number) => ipcRenderer.invoke('window:set-ui-scale', scale),
   chooseDirectory: (initialPath?: string) => ipcRenderer.invoke('dialog:directory', initialPath),
   chooseMedia: (type: 'image' | 'video' | 'audio') => ipcRenderer.invoke('dialog:media', type),
+  chooseVideos: () => ipcRenderer.invoke('dialog:videos'),
   scanModels: (settings: unknown) => ipcRenderer.invoke('models:scan', settings),
   getComfyStatus: (url: string) => ipcRenderer.invoke('comfy:status', url),
   submitPrompt: (url: string, prompt: unknown, clientId?: string) => ipcRenderer.invoke('comfy:submit', url, prompt, clientId),
@@ -24,9 +38,16 @@ contextBridge.exposeInMainWorld('minimax', {
   uploadInput: (url: string, filePath: string) => ipcRenderer.invoke('comfy:upload', url, filePath),
   fileDataUrl: (filePath: string) => ipcRenderer.invoke('file:data-url', filePath),
   mediaUrl: (filePath: string) => ipcRenderer.invoke('file:media-url', filePath),
+  validateMediaFiles: (files: unknown[]) => ipcRenderer.invoke('media:validate', files),
   extractVideoFrame: (source: string, position: number | 'last', outputDirectory: string, ffmpegPath: string) => ipcRenderer.invoke('video:frame', source, position, outputDirectory, ffmpegPath),
+  getVideoThumbnail: (source: string, ffmpegPath: string) => ipcRenderer.invoke('video:thumbnail', source, ffmpegPath),
   extractVideoFrames: (source: string, positions: number[], outputDirectory: string, ffmpegPath: string) => ipcRenderer.invoke('video:frames', source, positions, outputDirectory, ffmpegPath),
   trimVideo: (source: string, start: number, end: number, outputDirectory: string, ffmpegPath: string) => ipcRenderer.invoke('video:trim', source, start, end, outputDirectory, ffmpegPath),
+  getVideoMetadata: (source: string, ffmpegPath: string) => ipcRenderer.invoke('video:metadata', source, ffmpegPath),
+  extractClipMasterFrames: (source: string, frames: unknown[], outputDirectory: string, ffmpegPath: string, sourceName: string) => ipcRenderer.invoke('clip-master:frames', source, frames, outputDirectory, ffmpegPath, sourceName),
+  chooseClipMasterExportPath: (outputDirectory: string, sourceName: string) => ipcRenderer.invoke('clip-master:choose-export-path', outputDirectory, sourceName),
+  trimClipMaster: (source: string, startFrame: number, endFrame: number, fps: number, outputPath: string, ffmpegPath: string) => ipcRenderer.invoke('clip-master:trim', source, startFrame, endFrame, fps, outputPath, ffmpegPath),
+  spliceClipMaster: (clips: unknown[], outputDirectory: string, ffmpegPath: string) => ipcRenderer.invoke('clip-master:splice', clips, outputDirectory, ffmpegPath),
   joinVideos: (clips: unknown[], outputDirectory: string, ffmpegPath: string) => ipcRenderer.invoke('video:join', clips, outputDirectory, ffmpegPath),
   getRifeStatus: () => ipcRenderer.invoke('rife:status'),
   installRife: () => ipcRenderer.invoke('rife:install'),
@@ -35,12 +56,17 @@ contextBridge.exposeInMainWorld('minimax', {
   trashOutput: (source: string, mode: 'trash' | 'permanent' = 'trash') => ipcRenderer.invoke('outputs:trash', source, mode),
   findLatestOutput: (outputPath: string, since: number, kind: 'video' | 'audio' = 'video') => ipcRenderer.invoke('outputs:latest', outputPath, since, kind),
   resolveOutput: (outputPath: string, file: { filename: string; subfolder?: string; type?: string }) => ipcRenderer.invoke('outputs:resolve', outputPath, file),
-  listOllamaModels: (url: string, provider: 'ollama' | 'lmstudio' = 'ollama') => ipcRenderer.invoke('ollama:list', url, provider),
-  generateWithOllama: (url: string, model: string, prompt: string, provider: 'ollama' | 'lmstudio' = 'ollama') => ipcRenderer.invoke('ollama:generate', url, model, prompt, provider),
-  generateWithOllamaVision: (url: string, model: string, prompt: string, imagePaths: string[], provider: 'ollama' | 'lmstudio' = 'ollama') => ipcRenderer.invoke('ollama:vision', url, model, prompt, imagePaths, provider),
-  generateStructuredWithOllama: (url: string, model: string, prompt: string, schema: Record<string, unknown>, provider: 'ollama' | 'lmstudio' = 'ollama', imagePaths: string[] = []) => ipcRenderer.invoke('ollama:structured', url, model, prompt, schema, provider, imagePaths),
+  getLocalLlmStatus: (url: string, provider: 'ollama' | 'lmstudio' = 'ollama') => invokeLocalLlm('ollama:status', url, provider),
+  generateWithOllama: (url: string, model: string, prompt: string, provider: 'ollama' | 'lmstudio' = 'ollama') => invokeLocalLlm('ollama:generate', url, model, prompt, provider),
+  generateWithOllamaVision: (url: string, model: string, prompt: string, imagePaths: string[], provider: 'ollama' | 'lmstudio' = 'ollama') => invokeLocalLlm('ollama:vision', url, model, prompt, imagePaths, provider),
+  generateStructuredWithOllama: (url: string, model: string, prompt: string, schema: Record<string, unknown>, provider: 'ollama' | 'lmstudio' = 'ollama', imagePaths: string[] = []) => invokeLocalLlm('ollama:structured', url, model, prompt, schema, provider, imagePaths),
   getLanStatus: () => ipcRenderer.invoke('lan:status'),
   syncMobileCharacters: (characters: unknown[]) => ipcRenderer.invoke('lan:sync-characters', characters),
   rotateLanToken: () => ipcRenderer.invoke('lan:rotate-token'),
   setWindowAlwaysOnTop: (enabled: boolean) => ipcRenderer.invoke('window:set-always-on-top', enabled),
+  openDevTools: () => ipcRenderer.invoke('window:open-dev-tools'),
+  openStudio: () => ipcRenderer.invoke('window:open-studio'),
+  openMovieEditor: () => ipcRenderer.invoke('window:open-movie-editor'),
+  exportVideo: (source: string, suggestedName: string) => ipcRenderer.invoke('video:export', source, suggestedName),
+  prepareContinuationSource: (sources: string[], throughTime: number | null, outputDirectory: string, ffmpegPath: string) => ipcRenderer.invoke('video:continuation-source', sources, throughTime, outputDirectory, ffmpegPath),
 })

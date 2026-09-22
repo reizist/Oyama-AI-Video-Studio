@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Movie handoff UI fixture</title></head><body><div id="root"></div>
+<script type="module">
+// Development-only UI fixture. Run on a separate Vite port to isolate project storage.
+import React from 'react'
+import { createRoot } from 'react-dom/client'
+import { MovieEditor } from '../src/components/MovieEditor'
+import { installBrowserMock } from '../src/browserMock'
+import '../src/styles.css'
+import '../src/workspace-theme.css'
+import '../src/movie-workspace.css'
+installBrowserMock()
+const settings = await window.minimax.getSettings()
+let extractedAt = null
+window.minimax.extractVideoFrame = async (_source, position) => { extractedAt = position; return { name: 'fixture-frame.png', path: 'C:/fixture/frame.png', size: 100 } }
+window.minimax.mediaUrl = async () => 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="gray"/></svg>'
+function Fixture() {
+  const [result, setResult] = React.useState('Select the fixture clip, then choose a frame and destination. No native extraction is performed.')
+  return React.createElement(React.Fragment, null,
+    React.createElement('p', { role: 'status', style: { padding: 12 } }, result),
+    React.createElement(MovieEditor, { settings, jobs: [{ id: 'handoff-fixture', status: 'completed', outputUrl: 'fixture.mp4', prompt: 'Handoff regression clip', mediaType: 'video', duration: 5, createdAt: 1 }],
+      onNotice: (_tone, text) => setResult(text),
+      onUseFrame: (_file, target) => setResult(`Frame ready: ${target} at ${extractedAt.toFixed(4)} seconds`),
+      onOpenClipMaster: () => setResult('Clip Master callback reached'),
+    }))
+}
+createRoot(document.getElementById('root')).render(React.createElement(Fixture))
+</script></body></html>

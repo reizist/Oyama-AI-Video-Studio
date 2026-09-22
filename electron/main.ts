@@ -1,16 +1,20 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol, session, shell } from 'electron'
+import { constants, createReadStream, createWriteStream, existsSync } from 'node:fs'
+import { copyFile, cp, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
+import { writeAtomicFile } from './atomicFile.js'
 import { trashOutput } from './trashOutput.js'
-import { createReadStream, existsSync } from 'node:fs'
-import { cp, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve } from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { networkInterfaces } from 'node:os'
 import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import WebSocket from 'ws'
 
 type ModelKind = 'diffusion_models' | 'text_encoders' | 'vae' | 'loras' | 'vae_approx' | 'clip_vision'
+type GpuRouteDevice = 'auto' | 'cpu' | `gpu:${number}`
+type GpuRoutingSettings = { preset: 'automatic' | 'single' | 'split' | 'custom'; strategy: 'resident' | 'sequential' | 'cpu-fallback'; diffusion: GpuRouteDevice; textEncoder: GpuRouteDevice; videoVae: GpuRouteDevice; audioVae: GpuRouteDevice; previewVae: GpuRouteDevice; allowOvercommit: boolean; preloadDiffusionDuringTextEncoding: boolean }
 
 type GenerationDefaults = {
   resolution: string
@@ -26,14 +30,14 @@ type GenerationDefaults = {
   shiftVideo: number
   shiftAudio: number
   loraStrength: number
-  upscaleMode: 'off' | 'ltx' | 'rtx'
+  upscaleMode: 'off' | 'refine' | 'h3' | 'ltx' | 'rtx'
   textEncoderPreference: 'fast' | 'quality'
   turbo8Profile: 'stable' | 'balanced' | 'motion'
 }
 type RenderIntentValues = GenerationDefaults & {
   userLoras: Array<{ name: string; strength: number }>
   rtxModel: string
-  livePreviewMode: 'standard' | 'h3-override'
+  livePreviewMode: 'auto' | 'standard' | 'h3-override'
   noDialogue: boolean
   naturalMovement: boolean
   clothingPolicy: 'wardrobe' | 'underwear' | 'unrestricted'
@@ -52,9 +56,14 @@ type AppSettings = {
   modelRoot: string
   paths: Record<ModelKind, string>
   outputDirectory: string
+  clipMasterOutputDirectory: string
   ffmpegPath: string
   uiScale: number
-  attentionBackend: 'automatic' | 'kitchen' | 'sage' | 'native'
+  attentionBackend: 'automatic' | 'sol' | 'kitchen' | 'sage' | 'native'
+  solAttnTau: number
+  solCacheEnabled: boolean
+  h3DiffusionPrecision: 'int8' | 'nvfp4'
+  gpuRouting: GpuRoutingSettings
   h3ParallelAttentionEnabled: boolean
   experimentalLtxMsrEnabled: boolean
   blurNsfwLivePreviews: boolean
@@ -65,7 +74,9 @@ type AppSettings = {
 }
 
 type LanStatus = { running: boolean; url?: string; desktopUrl?: string; port?: number; error?: string }
-type GpuTelemetry = { available: boolean; name?: string; usagePercent?: number; vramPercent?: number; vramUsedMb?: number; vramTotalMb?: number }
+type GpuTelemetryDevice = { index: number; name: string; usagePercent: number; vramPercent: number; vramUsedMb: number; vramTotalMb: number; vramFreeMb: number }
+type GpuTelemetry = { available: boolean; name?: string; usagePercent?: number; vramPercent?: number; vramUsedMb?: number; vramTotalMb?: number; devices?: GpuTelemetryDevice[] }
+type RenderBenchmark = { jobId: string; hardwareKey: string; hardwareLabel: string; provider: 'minimax'; mode: string; turbo: string; attention: string; width: number; height: number; duration: number; steps: number; engineMs: number; measuredAt: number }
 const ltxUpscaleRequiredNodes = ['VAEEncodeTiled', 'LatentUpscaleModelLoader', 'LTXVLatentUpsampler', 'VAEDecodeTiled', 'ImageFromBatch', 'RepeatImageBatch', 'ImageBatch']
 const ltxNativeRequiredNodes = ['LTXVConditioning', 'LTXVEmptyLatentAudio', 'EmptyLTXVLatentVideo', 'LTXVDualCFGGuider', 'LTXVSeparateAVLatent', 'LTXVConcatAVLatent', 'LTXVLatentUpsampler', 'LTXVAudioVAEDecode', 'ManualSigmas', 'VAEDecodeTiled', 'CLIPTextEncode', 'KSamplerSelect', 'SamplerCustomAdvanced']
 let lanToken = ''
@@ -89,11 +100,15 @@ function readGpuTelemetry(): Promise<GpuTelemetry> {
     child.on('error', () => finish({ available: false }))
     child.on('close', (code) => {
       if (code !== 0 || !output.trim()) { finish({ available: false }); return }
-      const [name = 'GPU', usage = '', used = '', total = ''] = output.trim().split(/\r?\n/, 1)[0].split(',').map((part) => part.trim())
-      const usagePercent = Number(usage)
-      const vramUsedMb = Number(used)
-      const vramTotalMb = Number(total)
-      finish({ available: true, name, usagePercent: Number.isFinite(usagePercent) ? usagePercent : undefined, vramUsedMb: Number.isFinite(vramUsedMb) ? vramUsedMb : undefined, vramTotalMb: Number.isFinite(vramTotalMb) ? vramTotalMb : undefined, vramPercent: vramTotalMb > 0 ? Math.round(vramUsedMb / vramTotalMb * 100) : undefined })
+      const devices = output.trim().split(/\r?\n/).map((line, index) => {
+        const [name = `GPU ${index}`, usage = '', used = '', total = ''] = line.split(',').map((part) => part.trim())
+        const usagePercent = Number(usage) || 0
+        const vramUsedMb = Number(used) || 0
+        const vramTotalMb = Number(total) || 0
+        return { index, name, usagePercent, vramUsedMb, vramTotalMb, vramFreeMb: Math.max(0, vramTotalMb - vramUsedMb), vramPercent: vramTotalMb > 0 ? Math.round(vramUsedMb / vramTotalMb * 100) : 0 }
+      })
+      const primary = devices[0]
+      finish({ available: devices.length > 0, name: primary?.name, usagePercent: primary?.usagePercent, vramUsedMb: primary?.vramUsedMb, vramTotalMb: primary?.vramTotalMb, vramPercent: primary?.vramPercent, devices })
     })
   })
 }
@@ -116,6 +131,10 @@ async function localMediaResponse(filePath: string, request: Request) {
   if (!details.isFile() || details.size === 0) return new Response('Media file is empty', { status: 404 })
   const size = details.size
   const range = request.headers.get('range')
+  const etag = `W/"${size}-${Math.trunc(details.mtimeMs)}"`
+  if (!range && request.headers.get('if-none-match') === etag) {
+    return new Response(null, { status: 304, headers: { etag, 'cache-control': 'private, max-age=3600' } })
+  }
   let start = 0
   let end = size - 1
   let status = 200
@@ -140,6 +159,10 @@ async function localMediaResponse(filePath: string, request: Request) {
     'content-length': String(end - start + 1),
     'content-type': mediaMimeTypes[extname(filePath).toLowerCase()] ?? 'application/octet-stream',
     'cache-control': 'private, max-age=3600',
+    'content-disposition': 'inline',
+    'last-modified': details.mtime.toUTCString(),
+    'x-content-type-options': 'nosniff',
+    etag,
   })
   if (status === 206) headers.set('content-range', `bytes ${start}-${end}/${size}`)
   if (request.method === 'HEAD') return new Response(null, { status, headers })
@@ -169,9 +192,14 @@ function defaultSettings(): AppSettings {
     modelRoot: root,
     paths: Object.fromEntries(modelKinds.map((kind) => [kind, join(root, kind)])) as Record<ModelKind, string>,
     outputDirectory: join(app.getPath('documents'), 'ComfyUI', 'output'),
+    clipMasterOutputDirectory: join(app.getPath('documents'), 'ComfyUI', 'output', 'video'),
     ffmpegPath: existsSync('C:\\FFMPEG\\bin\\ffmpeg.exe') ? 'C:\\FFMPEG\\bin\\ffmpeg.exe' : 'ffmpeg',
     uiScale: 100,
     attentionBackend: 'automatic',
+    solAttnTau: 1,
+    solCacheEnabled: true,
+    h3DiffusionPrecision: 'int8',
+    gpuRouting: { preset: 'automatic', strategy: 'sequential', diffusion: 'auto', textEncoder: 'auto', videoVae: 'auto', audioVae: 'auto', previewVae: 'auto', allowOvercommit: false, preloadDiffusionDuringTextEncoding: false },
     h3ParallelAttentionEnabled: false,
     experimentalLtxMsrEnabled: false,
     blurNsfwLivePreviews: false,
@@ -181,7 +209,7 @@ function defaultSettings(): AppSettings {
     generationDefaults: {
       resolution: '1344x768', duration: 5, turbo: 'off', steps: 30,
       sampler: 'res_multistep', scheduler: 'simple', experimentalSampling: false,
-      refImageSize: 'match', livePreview: true, sigmaShiftMode: 'model', shiftVideo: 12, shiftAudio: 3, loraStrength: 1, upscaleMode: 'off', textEncoderPreference: 'fast', turbo8Profile: 'balanced',
+      refImageSize: 'match', livePreview: true, sigmaShiftMode: 'model', shiftVideo: 12, shiftAudio: 3, loraStrength: 1, upscaleMode: 'refine', textEncoderPreference: 'fast', turbo8Profile: 'balanced',
     },
   }
 }
@@ -195,6 +223,10 @@ function finalOllamaAnswer(value: string) {
 
 type LlmProvider = AppSettings['llmProvider']
 
+function llmLabel(provider: LlmProvider) {
+  return provider === 'lmstudio' ? 'LM Studio' : 'Ollama'
+}
+
 function lmStudioPath(url: string, path: string) {
   return /\/v1\/?$/i.test(cleanUrl(url)) ? path : `/v1${path}`
 }
@@ -207,25 +239,55 @@ function assertLocalLmStudioUrl(value: string) {
   if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('LM Studio must use an HTTP or HTTPS URL.')
 }
 
+function assertLlmUrl(value: string, provider: LlmProvider) {
+  let parsed: URL
+  try { parsed = new URL(value) } catch { throw new Error(`Enter a valid ${llmLabel(provider)} server URL.`) }
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error(`${llmLabel(provider)} must use an HTTP or HTTPS URL.`)
+  if (provider === 'lmstudio') assertLocalLmStudioUrl(value)
+}
+
+async function llmFetch(url: string, path: string, provider: LlmProvider, init?: RequestInit, timeoutMs = 600_000) {
+  assertLlmUrl(url, provider)
+  const label = llmLabel(provider)
+  let response: Response
+  try {
+    response = await fetch(`${cleanUrl(url)}${path}`, { ...init, signal: init?.signal ?? AbortSignal.timeout(timeoutMs) })
+  } catch (cause) {
+    const timedOut = cause instanceof Error && (cause.name === 'TimeoutError' || cause.name === 'AbortError')
+    if (timedOut) throw new Error(`${label} did not respond in time. Confirm the selected model is loaded, then try again.`)
+    throw new Error(`Could not reach ${label} at ${cleanUrl(url)}. ${provider === 'ollama' ? 'Start Ollama' : 'Start the LM Studio local server'}, check the server URL, then try again.`)
+  }
+  if (!response.ok) {
+    const body = await response.text().catch(() => '')
+    let detail = body.trim()
+    try {
+      const parsed = JSON.parse(body) as { error?: string | { message?: string }; message?: string }
+      detail = typeof parsed.error === 'string' ? parsed.error : parsed.error?.message ?? parsed.message ?? detail
+    } catch { /* Keep a non-JSON provider response as the detail. */ }
+    if (response.status === 404 && /model/i.test(detail)) throw new Error(`${detail.replace(/\s+/g, ' ')} Refresh models in Settings and choose an installed model.`)
+    throw new Error(`${label} returned ${response.status}${detail ? `: ${detail.replace(/\s+/g, ' ').slice(0, 500)}` : '.'}`)
+  }
+  const contentType = response.headers.get('content-type') ?? ''
+  return contentType.includes('application/json') ? response.json() : response.text()
+}
+
 async function listLlmModels(url: string, provider: LlmProvider) {
   if (provider === 'lmstudio') {
-    assertLocalLmStudioUrl(url)
-    const result = await comfyFetch(url, lmStudioPath(url, '/models')) as { data?: Array<{ id?: string; owned_by?: string }> }
+    const result = await llmFetch(url, lmStudioPath(url, '/models'), provider, undefined, 10_000) as { data?: Array<{ id?: string; owned_by?: string }> }
     return (result.data ?? []).filter((model) => model.id).map((model) => ({ name: model.id!, size: 0, family: model.owned_by ?? 'lmstudio', parameterSize: '', local: true }))
   }
-  const data = await comfyFetch(url, '/api/tags') as { models?: Array<{ name: string; size?: number; remote_model?: string; details?: { family?: string; parameter_size?: string } }> }
+  const data = await llmFetch(url, '/api/tags', provider, undefined, 10_000) as { models?: Array<{ name: string; size?: number; remote_model?: string; details?: { family?: string; parameter_size?: string } }> }
   return (data.models ?? []).map((model) => ({ name: model.name, size: model.size ?? 0, family: model.details?.family ?? '', parameterSize: model.details?.parameter_size ?? '', local: !model.remote_model && model.size !== 342 }))
 }
 
 async function generateWithLlm(url: string, model: string, prompt: string, provider: LlmProvider) {
   if (provider === 'lmstudio') {
-    assertLocalLmStudioUrl(url)
-    const data = await comfyFetch(url, lmStudioPath(url, '/chat/completions'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], stream: false, temperature: 0.65, max_tokens: 1800 }) }) as { choices?: Array<{ message?: { content?: string } }>; error?: { message?: string } | string }
+    const data = await llmFetch(url, lmStudioPath(url, '/chat/completions'), provider, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], stream: false, temperature: 0.65, max_tokens: 1800 }) }) as { choices?: Array<{ message?: { content?: string } }>; error?: { message?: string } | string }
     const answer = finalOllamaAnswer(data.choices?.[0]?.message?.content ?? '')
     if (!answer) throw new Error(typeof data.error === 'string' ? data.error : data.error?.message || 'LM Studio returned an empty response.')
     return answer
   }
-  const data = await comfyFetch(url, '/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, prompt, stream: false, keep_alive: 0, think: false, options: { temperature: 0.65, num_predict: 1200 } }) }) as { response?: string; error?: string }
+  const data = await llmFetch(url, '/api/generate', provider, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, prompt, stream: false, keep_alive: '10m', think: false, options: { temperature: 0.65, num_predict: 1200 } }) }) as { response?: string; error?: string }
   const answer = data.response ? finalOllamaAnswer(data.response) : ''
   if (!answer) throw new Error(data.error || 'Ollama returned an empty response.')
   return answer
@@ -233,6 +295,32 @@ async function generateWithLlm(url: string, model: string, prompt: string, provi
 
 function settingsPath() {
   return join(app.getPath('userData'), 'settings.json')
+}
+
+function renderBenchmarksPath() {
+  return join(app.getPath('userData'), 'render-benchmarks.json')
+}
+
+function validRenderBenchmark(value: unknown): value is RenderBenchmark {
+  if (!value || typeof value !== 'object') return false
+  const item = value as Record<string, unknown>
+  return item.provider === 'minimax'
+    && typeof item.jobId === 'string' && typeof item.hardwareKey === 'string' && typeof item.hardwareLabel === 'string'
+    && typeof item.mode === 'string' && typeof item.turbo === 'string' && typeof item.attention === 'string'
+    && ['width', 'height', 'duration', 'steps', 'engineMs', 'measuredAt'].every((key) => Number.isFinite(Number(item[key])) && Number(item[key]) > 0)
+}
+
+async function loadRenderBenchmarks(): Promise<RenderBenchmark[]> {
+  try {
+    const stored = JSON.parse(await readFile(renderBenchmarksPath(), 'utf8'))
+    return Array.isArray(stored) ? stored.filter(validRenderBenchmark).slice(0, 180) : []
+  } catch { return [] }
+}
+
+async function saveRenderBenchmarks(value: unknown): Promise<RenderBenchmark[]> {
+  const benchmarks = Array.isArray(value) ? value.filter(validRenderBenchmark).sort((a, b) => b.measuredAt - a.measuredAt).slice(0, 180) : []
+  await writeAtomicFile(renderBenchmarksPath(), `${JSON.stringify(benchmarks, null, 2)}\n`)
+  return benchmarks
 }
 
 function lanTokenPath() {
@@ -283,7 +371,7 @@ async function migrateLegacyUserData(options: { force?: boolean; replaceBrowserS
   await cp(legacy, destination, { recursive: true, force: false, errorOnExist: false, filter: (path) => basename(path) !== 'LOCK' })
   const browserStorageMigrated = destinationWasFresh || options.replaceBrowserStorage === true
   if (browserStorageMigrated) await copyLegacyBrowserState(legacy, destination)
-  await writeFile(legacyMigrationMarkerPath(), JSON.stringify({ source: legacy, migratedAt: new Date().toISOString(), browserStorageMigrated }, null, 2), 'utf8')
+  await writeAtomicFile(legacyMigrationMarkerPath(), `${JSON.stringify({ source: legacy, migratedAt: new Date().toISOString(), browserStorageMigrated }, null, 2)}\n`)
 }
 
 async function legacyMigrationStatus() {
@@ -298,8 +386,7 @@ async function legacyMigrationStatus() {
 }
 
 async function saveLanToken(token: string) {
-  await mkdir(dirname(lanTokenPath()), { recursive: true })
-  await writeFile(lanTokenPath(), token, 'utf8')
+  await writeAtomicFile(lanTokenPath(), token)
 }
 
 async function loadLanToken() {
@@ -321,7 +408,7 @@ async function loadSettings(): Promise<AppSettings> {
     generationDefaults.textEncoderPreference = raw.generationDefaults?.textEncoderPreference === 'quality' ? 'quality' : 'fast'
     generationDefaults.turbo8Profile = raw.generationDefaults?.turbo8Profile === 'stable' || raw.generationDefaults?.turbo8Profile === 'motion' ? raw.generationDefaults.turbo8Profile : 'balanced'
     const uiScale = Math.max(75, Math.min(150, Number(raw.uiScale) || defaults.uiScale))
-    const renderIntentDefaults: RenderIntentValues = { ...generationDefaults, userLoras: [], rtxModel: '', livePreviewMode: 'standard', noDialogue: true, naturalMovement: true, clothingPolicy: 'wardrobe', seed: 0, seedLocked: true }
+    const renderIntentDefaults: RenderIntentValues = { ...generationDefaults, userLoras: [], rtxModel: '', livePreviewMode: 'auto', noDialogue: true, naturalMovement: true, clothingPolicy: 'wardrobe', seed: 0, seedLocked: true }
     const renderSettingsPresets = Array.isArray(raw.renderSettingsPresets) ? raw.renderSettingsPresets.filter((preset) => preset && typeof preset.name === 'string' && preset.name.trim()).slice(0, 30).map((preset) => {
       const rawValues = preset.values && typeof preset.values === 'object' ? preset.values as Record<string, unknown> : {}
       const userLoras = Array.isArray(rawValues.userLoras) ? rawValues.userLoras.reduce<Array<{ name: string; strength: number }>>((items, item) => {
@@ -330,22 +417,34 @@ async function loadSettings(): Promise<AppSettings> {
         items.push({ name: lora.name, strength: Number.isFinite(Number(lora.strength)) ? Number(lora.strength) : 1 })
         return items
       }, []).slice(0, 3) : []
-      const values: RenderIntentValues = { ...renderIntentDefaults, ...(rawValues as Partial<RenderIntentValues>), userLoras, rtxModel: typeof rawValues.rtxModel === 'string' ? rawValues.rtxModel : '', livePreviewMode: rawValues.livePreviewMode === 'h3-override' ? 'h3-override' : 'standard', noDialogue: rawValues.noDialogue !== false, naturalMovement: rawValues.naturalMovement !== false, clothingPolicy: rawValues.clothingPolicy === 'underwear' || rawValues.clothingPolicy === 'unrestricted' ? rawValues.clothingPolicy : 'wardrobe', seed: Math.max(0, Math.min(999999999999, Math.floor(Number(rawValues.seed) || 0))), seedLocked: rawValues.seedLocked !== false }
+      const values: RenderIntentValues = { ...renderIntentDefaults, ...(rawValues as Partial<RenderIntentValues>), userLoras, rtxModel: typeof rawValues.rtxModel === 'string' ? rawValues.rtxModel : '', livePreviewMode: rawValues.livePreviewMode === 'h3-override' || rawValues.livePreviewMode === 'standard' ? rawValues.livePreviewMode : 'auto', noDialogue: rawValues.noDialogue !== false, naturalMovement: rawValues.naturalMovement !== false, clothingPolicy: rawValues.clothingPolicy === 'underwear' || rawValues.clothingPolicy === 'unrestricted' ? rawValues.clothingPolicy : 'wardrobe', seed: Math.max(0, Math.min(999999999999, Math.floor(Number(rawValues.seed) || 0))), seedLocked: rawValues.seedLocked !== false }
       return { id: typeof preset.id === 'string' ? preset.id : randomUUID(), name: preset.name.trim().slice(0, 60), values, createdAt: Number(preset.createdAt) || Date.now(), updatedAt: Number(preset.updatedAt) || Date.now() }
     }) : []
-    const attentionBackend = raw.attentionBackend === 'kitchen' || raw.attentionBackend === 'sage' || raw.attentionBackend === 'native' ? raw.attentionBackend : 'automatic'
-    return { ...defaults, ...raw, uiScale, attentionBackend, h3ParallelAttentionEnabled: raw.h3ParallelAttentionEnabled === true, queueDelaySeconds: Math.max(0, Math.min(600, Number(raw.queueDelaySeconds) || 0)), experimentalLtxMsrEnabled: raw.experimentalLtxMsrEnabled === true, blurNsfwLivePreviews: raw.blurNsfwLivePreviews === true, llmProvider: raw.llmProvider === 'lmstudio' ? 'lmstudio' : 'ollama', characterDetailReferencesEnabled: raw.characterDetailReferencesEnabled === true, renderSettingsPresets, paths: { ...defaults.paths, ...raw.paths }, generationDefaults }
+    const attentionBackend = raw.attentionBackend === 'sol' || raw.attentionBackend === 'kitchen' || raw.attentionBackend === 'sage' || raw.attentionBackend === 'native' ? raw.attentionBackend : 'automatic'
+    const solAttnTau = Math.max(-1000, Math.min(10, Number(raw.solAttnTau) || 1))
+    const outputDirectory = typeof raw.outputDirectory === 'string' && raw.outputDirectory.trim() ? raw.outputDirectory.trim() : defaults.outputDirectory
+    const clipMasterOutputDirectory = typeof raw.clipMasterOutputDirectory === 'string' && raw.clipMasterOutputDirectory.trim() ? raw.clipMasterOutputDirectory.trim() : join(outputDirectory, 'video')
+    const rawRouting = raw.gpuRouting
+    const validDevice = (value: unknown): GpuRouteDevice => typeof value === 'string' && (value === 'auto' || value === 'cpu' || /^gpu:\d+$/.test(value)) ? value as GpuRouteDevice : 'auto'
+    const gpuRouting: GpuRoutingSettings = { ...defaults.gpuRouting, ...rawRouting, preset: rawRouting?.preset === 'single' || rawRouting?.preset === 'split' || rawRouting?.preset === 'custom' ? rawRouting.preset : 'automatic', strategy: rawRouting?.strategy === 'resident' || rawRouting?.strategy === 'cpu-fallback' ? rawRouting.strategy : 'sequential', diffusion: validDevice(rawRouting?.diffusion), textEncoder: validDevice(rawRouting?.textEncoder), videoVae: validDevice(rawRouting?.videoVae), audioVae: validDevice(rawRouting?.audioVae), previewVae: validDevice(rawRouting?.previewVae), allowOvercommit: rawRouting?.allowOvercommit === true, preloadDiffusionDuringTextEncoding: rawRouting?.preloadDiffusionDuringTextEncoding === true }
+    return { ...defaults, ...raw, outputDirectory, clipMasterOutputDirectory, uiScale, attentionBackend, solAttnTau, solCacheEnabled: raw.solCacheEnabled !== false, h3DiffusionPrecision: raw.h3DiffusionPrecision === 'nvfp4' ? 'nvfp4' : 'int8', gpuRouting, h3ParallelAttentionEnabled: raw.h3ParallelAttentionEnabled === true, queueDelaySeconds: Math.max(0, Math.min(600, Number(raw.queueDelaySeconds) || 0)), experimentalLtxMsrEnabled: raw.experimentalLtxMsrEnabled === true, blurNsfwLivePreviews: raw.blurNsfwLivePreviews === true, llmProvider: raw.llmProvider === 'lmstudio' ? 'lmstudio' : 'ollama', characterDetailReferencesEnabled: raw.characterDetailReferencesEnabled === true, renderSettingsPresets, paths: { ...defaults.paths, ...raw.paths }, generationDefaults }
   } catch {
     return defaultSettings()
   }
 }
 
 async function saveSettings(settings: AppSettings) {
-  await mkdir(dirname(settingsPath()), { recursive: true })
-  const staged = `${settingsPath()}.tmp`
-  await writeFile(staged, JSON.stringify(settings, null, 2), 'utf8')
-  await rename(staged, settingsPath())
+  await writeAtomicFile(settingsPath(), `${JSON.stringify(settings, null, 2)}\n`)
   return settings
+}
+
+function factoryResetMarkerPath() { return join(app.getPath('userData'), 'pending-factory-reset.json') }
+async function factoryResetSettings(confirmation: unknown) {
+  if (confirmation !== 'Reset') throw new Error('Type Reset exactly to confirm factory reset.')
+  await writeAtomicFile(factoryResetMarkerPath(), JSON.stringify({ requestedAt: Date.now() }))
+  // Apply before any window opens on the next launch so a second editor or
+  // autosave cannot restore the cleared projects from stale in-memory state.
+  setTimeout(() => { app.relaunch(); app.exit(0) }, 300)
 }
 
 async function scanDirectory(root: string, kind: ModelKind) {
@@ -415,7 +514,14 @@ function cleanUrl(url: string) {
 async function comfyFetch(url: string, path: string, init?: RequestInit) {
   const response = await fetch(`${cleanUrl(url)}${path}`, init)
   if (!response.ok) {
-    const message = await response.text().catch(() => '')
+    const body = await response.text().catch(() => '')
+    let message = body
+    try {
+      const parsed = JSON.parse(body) as { error?: { message?: string } | string; node_errors?: Record<string, { errors?: Array<{ message?: string; details?: string }> }> }
+      const promptError = typeof parsed.error === 'string' ? parsed.error : parsed.error?.message
+      const nodeError = Object.entries(parsed.node_errors ?? {}).flatMap(([nodeId, value]) => (value.errors ?? []).map(error => `Node ${nodeId}: ${error.message ?? error.details ?? 'invalid input'}`))[0]
+      message = [promptError, nodeError].filter(Boolean).join(' · ')
+    } catch { /* Preserve non-JSON server errors verbatim. */ }
     throw new Error(message || `ComfyUI returned ${response.status}`)
   }
   const contentType = response.headers.get('content-type') ?? ''
@@ -652,6 +758,58 @@ function runFfmpeg(executable: string, args: string[]) {
   })
 }
 
+function resolveMediaTool(executable: string, name: 'ffmpeg' | 'ffprobe') {
+  const configured = executable.trim().replace(/^("')|("')$/g, '')
+  if (configured && extname(configured).toLowerCase() === (process.platform === 'win32' ? '.exe' : '')) {
+    const sibling = join(dirname(configured), process.platform === 'win32' ? `${name}.exe` : name)
+    if (existsSync(sibling)) return sibling
+    return name === 'ffmpeg' ? configured : name
+  }
+  const candidate = configured ? join(configured, process.platform === 'win32' ? `${name}.exe` : name) : ''
+  return candidate && existsSync(candidate) ? candidate : name
+}
+
+function runFfprobe(executable: string, args: string[]) {
+  return new Promise<string>((resolve, reject) => {
+    const child = spawn(resolveMediaTool(executable, 'ffprobe'), args, { windowsHide: true })
+    let stdout = ''; let stderr = ''
+    child.stdout.on('data', (chunk) => { stdout += chunk })
+    child.stderr.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-8000) })
+    child.once('error', (error) => reject(new Error(`Could not start FFprobe: ${error.message}`)))
+    child.once('close', (code) => code === 0 ? resolve(stdout) : reject(new Error(`FFprobe failed (${code}). ${stderr.split('\n').slice(-5).join(' ')}`)))
+  })
+}
+
+type ClipVideoMetadata = { duration: number; fps: number; frameCount: number; width: number; height: number }
+
+async function probeClipVideoMetadata(input: string, ffmpegPath: string): Promise<ClipVideoMetadata> {
+  const raw = await runFfprobe(ffmpegPath, ['-v', 'error', '-select_streams', 'v:0', '-count_frames', '-show_entries', 'stream=width,height,avg_frame_rate,r_frame_rate,nb_frames,nb_read_frames,duration:format=duration', '-of', 'json', input])
+  const payload = JSON.parse(raw) as { streams?: Array<{ width?: number; height?: number; avg_frame_rate?: string; r_frame_rate?: string; nb_frames?: string | number; nb_read_frames?: string | number; duration?: string | number }>; format?: { duration?: string | number } }
+  const stream = payload.streams?.[0]
+  if (!stream) throw new Error('No video stream was found in the selected clip.')
+  const parseRate = (value?: string) => { const [numerator, denominator] = String(value ?? '').split('/').map(Number); return denominator > 0 ? numerator / denominator : Number(value) }
+  const parsedFps = parseRate(stream.avg_frame_rate) || parseRate(stream.r_frame_rate) || 24
+  const fps = Number.isFinite(parsedFps) && parsedFps > 0 ? parsedFps : 24
+  const parsedDuration = Number(stream.duration ?? payload.format?.duration ?? 0)
+  const duration = Number.isFinite(parsedDuration) && parsedDuration > 0 ? parsedDuration : 0
+  const countedFrames = Number(stream.nb_read_frames)
+  const declaredFrames = Number(stream.nb_frames)
+  const frameCount = Number.isFinite(countedFrames) && countedFrames > 0 ? Math.round(countedFrames) : Number.isFinite(declaredFrames) && declaredFrames > 0 ? Math.round(declaredFrames) : Math.max(1, Math.round(duration * fps))
+  return { duration: duration || frameCount / fps, fps, frameCount, width: Number(stream.width) || 0, height: Number(stream.height) || 0 }
+}
+
+function clipMasterSlug(value: string) {
+  const stem = basename(value).replace(/\.[^.]+$/, '')
+  return (stem || 'clip').replace(/[^a-z0-9_-]+/gi, '_').replace(/^_+|_+$/g, '').slice(0, 80) || 'clip'
+}
+
+async function nextClipMasterPath(folder: string, stem: string, extension: string, alwaysVersion = false) {
+  let version = 1
+  const candidate = (value: number) => join(folder, `${stem}${alwaysVersion || value > 1 ? `_v${String(value).padStart(3, '0')}` : ''}.${extension}`)
+  while (existsSync(candidate(version))) version += 1
+  return candidate(version)
+}
+
 function runTool(executable: string, args: string[], label: string) {
   return new Promise<void>((resolve, reject) => {
     const child = spawn(executable, args, { windowsHide: true })
@@ -676,15 +834,15 @@ async function findRifeExecutable(root = rifeDirectory()): Promise<string | null
   return null
 }
 
-async function resolveVideoSource(source: string) {
+async function resolveUploadSource(source: string) {
   if (!source.startsWith('minimax-media:')) {
-    if (!existsSync(source) || !mediaExtensions.has(extname(source).toLowerCase())) throw new Error('The selected video file is unavailable.')
+    if (!existsSync(source) || !selectedMediaExtensions.has(extname(source).toLowerCase())) throw new Error('The selected media file is unavailable.')
     return source
   }
   const parsed = new URL(source)
   if (parsed.hostname === 'local' || parsed.hostname === 'selected') {
     const path = parsed.searchParams.get('path') ?? ''
-    if (!existsSync(path) || !mediaExtensions.has(extname(path).toLowerCase())) throw new Error('The selected video file is unavailable.')
+    if (!existsSync(path) || !selectedMediaExtensions.has(extname(path).toLowerCase())) throw new Error('The selected media file is unavailable.')
     return path
   }
   if (parsed.hostname === 'comfy') {
@@ -693,13 +851,47 @@ async function resolveVideoSource(source: string) {
     const configured = new URL(cleanUrl((await loadSettings()).comfyUrl))
     const target = new URL(upstream)
     if (target.origin !== configured.origin || target.pathname !== '/view') throw new Error('The video is outside the configured ComfyUI server.')
-    const response = await fetch(target)
+    const response = await fetch(target, { signal: AbortSignal.timeout(90_000) }).catch((error: unknown) => {
+      if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) throw new Error('ComfyUI did not return the source video within 90 seconds. Check its connection and retry.')
+      throw error
+    })
     if (!response.ok) throw new Error(`Could not retrieve the ComfyUI video (${response.status}).`)
-    const temporary = join(app.getPath('temp'), `minimax-clip-${randomUUID()}.mp4`)
-    await writeFile(temporary, Buffer.from(await response.arrayBuffer()))
+    if (!response.body) throw new Error('ComfyUI returned an empty video response.')
+    const extension = extname(target.searchParams.get('filename') ?? '').toLowerCase()
+    if (!selectedMediaExtensions.has(extension)) throw new Error('The ComfyUI media type is unsupported.')
+    const temporary = join(app.getPath('temp'), `minimax-upload-${randomUUID()}${extension}`)
+    try { await pipeline(Readable.fromWeb(response.body as unknown as Parameters<typeof Readable.fromWeb>[0]), createWriteStream(temporary)) }
+    catch (error) { await unlink(temporary).catch(() => undefined); throw error }
     return temporary
   }
-  throw new Error('Unsupported video source.')
+  throw new Error('Unsupported media source.')
+}
+
+async function resolveVideoSource(source: string) {
+  const resolved = await resolveUploadSource(source)
+  if (!mediaExtensions.has(extname(resolved).toLowerCase())) throw new Error('The selected video file is unavailable.')
+  return resolved
+}
+
+let movieEditorWindow: BrowserWindow | null = null
+let studioWindow: BrowserWindow | null = null
+
+function createMovieEditorWindow() {
+  if (movieEditorWindow && !movieEditorWindow.isDestroyed()) { movieEditorWindow.focus(); return }
+  nativeTheme.themeSource = 'dark'
+  const window = new BrowserWindow({
+    width: 1480, height: 940, minWidth: 980, minHeight: 680,
+    backgroundColor: '#171719', title: 'Oyama AI Movie',
+    autoHideMenuBar: true,
+    webPreferences: { preload: join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
+  })
+  movieEditorWindow = window
+  window.setMenuBarVisibility(false)
+  void loadSettings().then((settings) => window.webContents.setZoomFactor(settings.uiScale / 100))
+  window.on('closed', () => { if (movieEditorWindow === window) movieEditorWindow = null })
+  const devUrl = process.env.VITE_DEV_SERVER_URL
+  if (devUrl) void window.loadURL(`${devUrl}${devUrl.includes('?') ? '&' : '?'}movieEditor=1`)
+  else void window.loadFile(join(__dirname, '..', 'dist', 'index.html'), { query: { movieEditor: '1' } })
 }
 
 function createWindow() {
@@ -711,27 +903,34 @@ function createWindow() {
     minHeight: 620,
     backgroundColor: '#071524',
     titleBarStyle: 'hidden',
-    titleBarOverlay: { color: '#071524', symbolColor: '#d8ebff', height: 48 },
+    titleBarOverlay: { color: '#243c53', symbolColor: '#d8ebff', height: 48 },
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
   })
+  studioWindow = window
+  window.on('closed', () => { if (studioWindow === window) studioWindow = null })
   window.setMenuBarVisibility(false)
   void loadSettings().then((settings) => window.webContents.setZoomFactor(settings.uiScale / 100))
-  window.webContents.setWindowOpenHandler(({ url }) => {
+  window.webContents.setWindowOpenHandler(({ url, frameName }) => {
     if (url !== 'about:blank') return { action: 'deny' }
+    const isPreviewMonitor = frameName === 'oyama-ai-video-studio-preview' || frameName === 'oyama-continuation'
     return {
       action: 'allow',
       overrideBrowserWindowOptions: {
-        width: 560,
-        height: 780,
-        minWidth: 420,
-        minHeight: 560,
-        backgroundColor: '#071524',
+        // The monitor is intentionally a wide, independently movable surface.
+        // Other popouts (for example, the copilot) retain their compact layout.
+        width: isPreviewMonitor ? 1080 : 560,
+        height: isPreviewMonitor ? 720 : 780,
+        minWidth: isPreviewMonitor ? 560 : 420,
+        minHeight: isPreviewMonitor ? 420 : 560,
+        resizable: true,
+        movable: true,
+        backgroundColor: isPreviewMonitor ? '#07100b' : '#071524',
         titleBarStyle: 'hidden',
-        titleBarOverlay: { color: '#071524', symbolColor: '#d8ebff', height: 48 },
+        titleBarOverlay: { color: '#243c53', symbolColor: '#d8ebff', height: 48 },
         webPreferences: {
           preload: join(__dirname, 'preload.js'),
           contextIsolation: true,
@@ -747,6 +946,14 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  if (existsSync(factoryResetMarkerPath())) {
+    await session.defaultSession.clearStorageData()
+    await saveSettings(defaultSettings())
+    await saveLanToken(randomUUID().replace(/-/g, ''))
+    await writeAtomicFile(legacyMigrationMarkerPath(), JSON.stringify({ factoryReset: true, browserStorageMigrated: true }))
+    if (existsSync(pendingBrowserStorageMigrationPath())) await unlink(pendingBrowserStorageMigrationPath())
+    await unlink(factoryResetMarkerPath())
+  }
   const repairBrowserStorage = existsSync(pendingBrowserStorageMigrationPath())
   await migrateLegacyUserData({ force: repairBrowserStorage, replaceBrowserStorage: repairBrowserStorage })
   if (repairBrowserStorage) await unlink(pendingBrowserStorageMigrationPath()).catch(() => undefined)
@@ -771,21 +978,28 @@ app.whenReady().then(async () => {
 
     const requestedPath = requestUrl.searchParams.get('path')
     if (!requestedPath) return new Response('Missing media path', { status: 400 })
+    if (requestUrl.hostname === 'thumbnail') {
+      const root = resolve(app.getPath('userData'), 'video-thumbnails')
+      const candidate = resolve(requestedPath)
+      const child = relative(root, candidate)
+      if (!child || child.startsWith('..') || isAbsolute(child) || extname(candidate).toLowerCase() !== '.jpg' || !existsSync(candidate)) return new Response('Thumbnail is unavailable', { status: 404 })
+      return localMediaResponse(candidate, request)
+    }
     if (requestUrl.hostname === 'selected') {
       if (!existsSync(requestedPath) || !selectedMediaExtensions.has(extname(requestedPath).toLowerCase())) return new Response('Selected media is unavailable', { status: 404 })
       return localMediaResponse(requestedPath, request)
     }
     const configured = normalize((await loadSettings()).outputDirectory)
     const candidate = normalize(requestedPath)
-    const relative = candidate.toLowerCase().startsWith(`${configured.toLowerCase()}\\`) || candidate.toLowerCase() === configured.toLowerCase()
-    if (!relative || !existsSync(candidate)) return new Response('Media is outside the configured output directory', { status: 403 })
+    const insideOutput = candidate.toLowerCase().startsWith(`${configured.toLowerCase()}\\`) || candidate.toLowerCase() === configured.toLowerCase()
+    if (!insideOutput || !existsSync(candidate)) return new Response('Media is outside the configured output directory', { status: 403 })
     return localMediaResponse(candidate, request)
   })
   ipcMain.handle('settings:get', () => loadSettings())
   ipcMain.handle('migration:legacy-status', () => legacyMigrationStatus())
   ipcMain.handle('migration:run', async (_event, replaceBrowserStorage = false) => {
     if (replaceBrowserStorage === true) {
-      await writeFile(pendingBrowserStorageMigrationPath(), JSON.stringify({ requestedAt: new Date().toISOString() }), 'utf8')
+      await writeAtomicFile(pendingBrowserStorageMigrationPath(), `${JSON.stringify({ requestedAt: new Date().toISOString() })}\n`)
       app.relaunch()
       app.exit(0)
       return { available: true, migrated: false, needsBrowserStorageRepair: false }
@@ -794,11 +1008,74 @@ app.whenReady().then(async () => {
     return legacyMigrationStatus()
   })
   ipcMain.handle('system:gpu-telemetry', () => readGpuTelemetry())
+  ipcMain.handle('render-benchmarks:get', () => loadRenderBenchmarks())
+  ipcMain.handle('render-benchmarks:save', (_event, benchmarks: unknown) => saveRenderBenchmarks(benchmarks))
   ipcMain.handle('window:set-always-on-top', (event, enabled: boolean) => {
     const target = BrowserWindow.fromWebContents(event.sender)
     if (!target) return false
     target.setAlwaysOnTop(Boolean(enabled), 'floating')
     return target.isAlwaysOnTop()
+  })
+  ipcMain.handle('window:open-studio', () => { if (!studioWindow || studioWindow.isDestroyed()) createWindow(); if (studioWindow?.isMinimized()) studioWindow.restore(); studioWindow?.show(); studioWindow?.focus() })
+  ipcMain.handle('window:open-movie-editor', () => { createMovieEditorWindow() })
+  ipcMain.handle('video:continuation-source', async (_event, sources: string[], throughTime: number | null, outputDirectory: string, ffmpegPath: string) => {
+    if (!Array.isArray(sources) || !sources.length || sources.length > 8) throw new Error('Select a valid continuation source.')
+    if (throughTime !== null && (!Number.isFinite(throughTime) || throughTime < 0)) throw new Error('Choose a valid source frame.')
+    let input = ''
+    let temporaryInput = false
+    let lastError: unknown
+    for (const source of sources) {
+      try {
+        input = await resolveVideoSource(source)
+        temporaryInput = source.startsWith('minimax-media:') && new URL(source).hostname === 'comfy'
+        break
+      } catch (error) { lastError = error }
+    }
+    if (!input) throw lastError ?? new Error('The source video is unavailable.')
+    try {
+    const metadata = await probeClipVideoMetadata(input, ffmpegPath)
+    if (throughTime !== null && throughTime >= metadata.duration) throw new Error('The chosen frame is outside this source. Choose a frame within the video.')
+    // LoadVideo preserves native cadence, while the H3 merger uses 24 fps.
+    // Normalize before loading so a 30/60 fps source cannot play in slow motion.
+    const frames = throughTime === null ? Math.max(1, Math.round(metadata.duration * 24)) : Math.floor(throughTime * 24) + 1
+    const folder = join(outputDirectory, 'continuations', '_sources')
+    await mkdir(folder, { recursive: true })
+    const output = join(folder, `source-${randomUUID()}.mp4`)
+    const audioStreams = JSON.parse(await runFfprobe(ffmpegPath, ['-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=index', '-of', 'json', input])) as { streams?: unknown[] }
+    const hasAudio = Boolean(audioStreams.streams?.length)
+    await runFfmpeg(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-i', input,
+      ...(!hasAudio ? ['-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo'] : []),
+      '-map', '0:v:0', '-map', hasAudio ? '0:a:0' : '1:a:0', '-vf', `fps=24,trim=end_frame=${frames},setpts=PTS-STARTPTS,pad=ceil(iw/2)*2:ceil(ih/2)*2`,
+      '-af', `apad,atrim=duration=${frames / 24},asetpts=PTS-STARTPTS`,
+      '-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p', '-r', '24', '-fps_mode', 'cfr',
+      '-c:a', 'aac', '-movflags', '+faststart', '-n', output]).catch(async error => {
+        await unlink(output).catch(() => undefined)
+        throw error
+      })
+    return output
+    } finally {
+      if (temporaryInput) await unlink(input).catch(() => undefined)
+    }
+  })
+  ipcMain.handle('window:open-dev-tools', (event) => {
+    const target = BrowserWindow.fromWebContents(event.sender)
+    if (!target || target.isDestroyed()) throw new Error('The current window is unavailable. Reopen the studio and try again.')
+    target.webContents.openDevTools({ mode: 'detach', activate: true })
+  })
+  ipcMain.handle('video:export', async (event, source: string, suggestedName: string) => {
+    const input = await resolveVideoSource(source)
+    const extension = extname(input).slice(1)
+    const owner = BrowserWindow.fromWebContents(event.sender)
+    const options = { title: 'Export video', defaultPath: `${basename(suggestedName).replace(/\.[^.]+$/, '').replace(/[<>:"/\\|?*]/g, '-')}.${extension}`, filters: [{ name: 'Video', extensions: [extension] }] }
+    const result = owner ? await dialog.showSaveDialog(owner, options) : await dialog.showSaveDialog(options)
+    if (result.canceled || !result.filePath) return null
+    if (resolve(input) === resolve(result.filePath)) throw new Error('Choose a different destination to preserve the source video.')
+    // An export must never replace a source or an earlier saved version.
+    await copyFile(input, result.filePath, constants.COPYFILE_EXCL).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'EEXIST') throw new Error('That file already exists. Choose a new filename for this export.')
+      throw error
+    })
+    return result.filePath
   })
   ipcMain.handle('lan:status', () => lanStatus)
   ipcMain.handle('lan:sync-characters', (_event, characters: unknown[]) => { mobileCharacterLibrary = Array.isArray(characters) ? characters : []; return { synced: mobileCharacterLibrary.length } })
@@ -812,6 +1089,7 @@ app.whenReady().then(async () => {
     return lanStatus
   })
   ipcMain.handle('settings:save', (_event, settings: AppSettings) => saveSettings(settings))
+  ipcMain.handle('settings:factory-reset', (_event, confirmation: unknown) => factoryResetSettings(confirmation))
   ipcMain.handle('workflow:export-json', async (_event, suggestedName: string, workflow: unknown) => {
     const safeName = basename(String(suggestedName || 'minimax-workflow.json')).replace(/[^a-z0-9._ -]/gi, '_')
     const result = await dialog.showSaveDialog({
@@ -821,7 +1099,7 @@ app.whenReady().then(async () => {
     })
     if (result.canceled || !result.filePath) return null
     const filePath = result.filePath.toLowerCase().endsWith('.json') ? result.filePath : `${result.filePath}.json`
-    await writeFile(filePath, `${JSON.stringify(workflow, null, 2)}\n`, 'utf8')
+    await writeAtomicFile(filePath, `${JSON.stringify(workflow, null, 2)}\n`)
     return filePath
   })
   ipcMain.handle('window:set-ui-scale', (event, scale: number) => {
@@ -846,6 +1124,11 @@ app.whenReady().then(async () => {
     const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [filters[type]] })
     return result.canceled ? null : { path: result.filePaths[0], name: basename(result.filePaths[0]) }
   })
+  ipcMain.handle('dialog:videos', async () => {
+    const result = await dialog.showOpenDialog({ properties: ['openFile', 'multiSelections'], filters: [{ name: 'Videos', extensions: ['mp4', 'mov', 'mkv', 'webm'] }] })
+    if (result.canceled) return []
+    return result.filePaths.map((path) => ({ path, name: basename(path) }))
+  })
   ipcMain.handle('models:scan', async (_event, settings: AppSettings) => {
     const groups = await Promise.all(modelKinds.map((kind) => scanDirectory(settings.paths[kind], kind)))
     return groups.flat().sort((a, b) => a.name.localeCompare(b.name))
@@ -853,21 +1136,32 @@ app.whenReady().then(async () => {
   ipcMain.handle('comfy:status', async (_event, url: string) => {
     const started = Date.now()
     try {
-      const stats = await comfyFetch(url, '/system_stats')
-      return { connected: true, latencyMs: Date.now() - started, stats }
+      const stats = await comfyFetch(url, '/system_stats', { signal: AbortSignal.timeout(15_000) }) as { system?: { argv?: string[] } }
+      const argv = stats.system?.argv ?? []
+      const outputIndex = argv.findIndex(value => value === '--output-directory')
+      const detectedOutputDirectory = outputIndex >= 0 ? argv[outputIndex + 1] : argv.find(value => value.startsWith('--output-directory='))?.slice('--output-directory='.length)
+      return { connected: true, latencyMs: Date.now() - started, stats, detectedOutputDirectory }
     } catch (error) {
       return { connected: false, latencyMs: Date.now() - started, error: error instanceof Error ? error.message : String(error) }
     }
   })
-  ipcMain.handle('comfy:submit', (_event, url: string, prompt: unknown, clientId?: string) =>
-    comfyFetch(url, '/prompt', {
+  ipcMain.handle('comfy:submit', async (_event, url: string, prompt: unknown, clientId?: string) => {
+    try {
+      const result = await comfyFetch(url, '/prompt', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt, client_id: clientId ?? randomUUID() }),
-    }),
-  )
-  ipcMain.handle('comfy:queue', (_event, url: string) => comfyFetch(url, '/queue'))
-  ipcMain.handle('comfy:info', (_event, url: string) => comfyFetch(url, '/object_info'))
+      signal: AbortSignal.timeout(60_000),
+      }) as { prompt_id?: unknown; node_errors?: unknown }
+      if (typeof result.prompt_id !== 'string' || !result.prompt_id) throw new Error('ComfyUI accepted the request but did not return a prompt ID. Check its queue before retrying to avoid a duplicate render.')
+      return result
+    } catch (error) {
+      if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) throw new Error('ComfyUI did not respond to the workflow submission within one minute. Check its queue before retrying to avoid a duplicate render.')
+      throw error
+    }
+  })
+  ipcMain.handle('comfy:queue', (_event, url: string) => comfyFetch(url, '/queue', { signal: AbortSignal.timeout(10_000) }))
+  ipcMain.handle('comfy:info', (_event, url: string) => comfyFetch(url, '/object_info', { signal: AbortSignal.timeout(30_000) }))
   ipcMain.handle('comfy:upload-data', async (_event, url: string, data: string) => {
     if (!data.startsWith('data:image/png;base64,') || data.length > 64_000_000) throw new Error('Invalid prepared image.')
     const form = new FormData()
@@ -916,7 +1210,7 @@ app.whenReady().then(async () => {
     await writeFile(target, Buffer.from(await response.arrayBuffer()))
     return { path: target, name: basename(target) }
   })
-  ipcMain.handle('comfy:history', (_event, url: string, promptId: string) => comfyFetch(url, `/history/${encodeURIComponent(promptId)}`))
+  ipcMain.handle('comfy:history', (_event, url: string, promptId: string) => comfyFetch(url, `/history/${encodeURIComponent(promptId)}`, { signal: AbortSignal.timeout(10_000) }))
   ipcMain.handle('comfy:cancel', async (_event, url: string, promptId: string) => {
     if (!promptId || typeof promptId !== 'string') throw new Error('A ComfyUI prompt ID is required to cancel a generation.')
     const queue = await comfyFetch(url, '/queue') as { queue_running?: unknown[][]; queue_pending?: unknown[][] }
@@ -952,19 +1246,35 @@ app.whenReady().then(async () => {
   ipcMain.handle('outputs:resolve', async (_event, outputDirectory: string, file: { filename?: unknown; subfolder?: unknown; type?: unknown }) => {
     const settings = await loadSettings()
     if (normalize(outputDirectory).toLowerCase() !== normalize(settings.outputDirectory).toLowerCase()) return null
-    // Callers persist this as localOutputPath and pass it to file:media-url.
+    // DesktopApi.resolveOutput promises a filesystem path. Callers persist this
+    // value for frame extraction and create a media URL separately. Returning a
+    // minimax-media URL here caused that URL to be treated as a path and made
+    // continuation fail after otherwise successful renders.
     return resolveComfyOutput(outputDirectory, file)
   })
   ipcMain.handle('comfy:upload', async (_event, url: string, filePath: string, subfolder = 'minimax-desktop') => {
-    const bytes = await readFile(filePath)
-    const form = new FormData()
-    form.append('image', new Blob([bytes]), basename(filePath))
-    form.append('type', 'input')
-    form.append('subfolder', subfolder)
-    form.append('overwrite', 'true')
-    return comfyFetch(url, '/upload/image', { method: 'POST', body: form })
+    // Completed jobs may persist a minimax-media URL instead of a filesystem
+    // path. Resolve it through the same guarded media loader used by frame
+    // extraction so continuation can reuse a video that already previews.
+    const source = await resolveUploadSource(filePath)
+    const temporarySource = filePath.startsWith('minimax-media:') && new URL(filePath).hostname === 'comfy'
+    try {
+      const bytes = await readFile(source)
+      const form = new FormData()
+      form.append('image', new Blob([bytes]), basename(source))
+      form.append('type', 'input')
+      form.append('subfolder', subfolder)
+      form.append('overwrite', 'true')
+      try { return await comfyFetch(url, '/upload/image', { method: 'POST', body: form, signal: AbortSignal.timeout(90_000) }) }
+      catch (error) {
+        if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) throw new Error(`ComfyUI did not finish uploading ${basename(source)} within 90 seconds. Check that ComfyUI is responsive, then retry this beat.`)
+        throw error
+      }
+    } finally {
+      if (temporarySource) await unlink(source).catch(() => undefined)
+    }
   })
-  ipcMain.handle('ollama:list', async (_event, url: string, provider: LlmProvider = 'ollama') => listLlmModels(url, provider))
+  ipcMain.handle('ollama:status', async (_event, url: string, provider: LlmProvider = 'ollama') => ({ connected: true, models: await listLlmModels(url, provider) }))
   ipcMain.handle('ollama:generate', async (_event, url: string, model: string, prompt: string, provider: LlmProvider = 'ollama') => generateWithLlm(url, model, prompt, provider))
   ipcMain.handle('ollama:vision', async (_event, url: string, model: string, prompt: string, imagePaths: string[], provider: LlmProvider = 'ollama') => {
     const allowedImages = new Set(['.png', '.jpg', '.jpeg', '.webp'])
@@ -979,17 +1289,15 @@ app.whenReady().then(async () => {
       }
     }
     if (!images.length) throw new Error('No readable local reference images were available to the copilot.')
-    if (provider === 'lmstudio') assertLocalLmStudioUrl(url)
     const data = provider === 'lmstudio'
-      ? await comfyFetch(url, lmStudioPath(url, '/chat/completions'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...images.map((image) => ({ type: 'image_url', image_url: { url: `data:${image.mime};base64,${image.base64}` } }))] }], stream: false, temperature: 0.45, max_tokens: 1800 }) }) as { choices?: Array<{ message?: { content?: string } }>; error?: { message?: string } | string }
-      : await comfyFetch(url, '/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt, images: images.map((image) => image.base64) }], stream: false, keep_alive: 0, think: false, options: { temperature: 0.45, num_predict: 1800 } }) }) as { message?: { content?: string }; error?: string }
+      ? await llmFetch(url, lmStudioPath(url, '/chat/completions'), provider, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...images.map((image) => ({ type: 'image_url', image_url: { url: `data:${image.mime};base64,${image.base64}` } }))] }], stream: false, temperature: 0.45, max_tokens: 1800 }) }) as { choices?: Array<{ message?: { content?: string } }>; error?: { message?: string } | string }
+      : await llmFetch(url, '/api/chat', provider, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt, images: images.map((image) => image.base64) }], stream: false, keep_alive: 0, think: false, options: { temperature: 0.45, num_predict: 1800 } }) }) as { message?: { content?: string }; error?: string }
     const answer = provider === 'lmstudio' ? finalOllamaAnswer(('choices' in data ? data.choices?.[0]?.message?.content : '') ?? '') : finalOllamaAnswer(('message' in data ? data.message?.content : '') ?? '')
     const error = 'error' in data ? data.error : undefined
     if (!answer) throw new Error(typeof error === 'string' ? error : error?.message || `${provider === 'lmstudio' ? 'LM Studio' : 'Ollama'} could not inspect the supplied reference images. Choose a local vision-capable model in Settings.`)
     return answer
   })
   ipcMain.handle('ollama:structured', async (_event, url: string, model: string, prompt: string, schema: Record<string, unknown>, provider: LlmProvider = 'ollama', imagePaths: string[] = []) => {
-    if (provider === 'lmstudio') assertLocalLmStudioUrl(url)
     const allowedImages = new Set(['.png', '.jpg', '.jpeg', '.webp'])
     const requestedPaths = imagePaths.slice(0, 6)
     const images: Array<{ base64: string; mime: string }> = []
@@ -1005,7 +1313,7 @@ app.whenReady().then(async () => {
       const mime = extension === '.png' ? 'image/png' : extension === '.webp' ? 'image/webp' : 'image/jpeg'
       images.push({ base64: bytes.toString('base64'), mime })
     }
-    const data = await comfyFetch(url, provider === 'lmstudio' ? lmStudioPath(url, '/chat/completions') : '/api/chat', {
+    const data = await llmFetch(url, provider === 'lmstudio' ? lmStudioPath(url, '/chat/completions') : '/api/chat', provider, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(provider === 'lmstudio' ? { model, messages: [{ role: 'user', content: images.length ? [{ type: 'text', text: prompt }, ...images.map((image) => ({ type: 'image_url', image_url: { url: `data:${image.mime};base64,${image.base64}` } }))] : prompt }], stream: false, response_format: { type: 'json_schema', json_schema: { name: 'oyama_ai_video_studio_response', strict: true, schema } }, temperature: 0.2, max_tokens: 6000 } : {
@@ -1032,6 +1340,83 @@ app.whenReady().then(async () => {
     if (!existsSync(filePath) || !selectedMediaExtensions.has(extname(filePath).toLowerCase())) throw new Error('The selected media is unavailable.')
     return `minimax-media://selected?path=${encodeURIComponent(filePath)}`
   })
+  ipcMain.handle('media:validate', async (_event, files: Array<{ path?: unknown; kind?: unknown }>) => {
+    if (!Array.isArray(files) || files.length > 16) throw new Error('Validate no more than 16 media files at once.')
+    return Promise.all(files.map(async (file) => {
+      const path = typeof file?.path === 'string' ? file.path : ''
+      const kind = file?.kind === 'image' || file?.kind === 'video' || file?.kind === 'audio' ? file.kind : 'image'
+      if (!path) return { path, valid: false, reason: 'Missing file path.' }
+      if (path.startsWith('minimax-media:')) return { path, valid: true }
+      const extensions = kind === 'image' ? imageExtensions : kind === 'video' ? mediaExtensions : new Set(['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac'])
+      if (!extensions.has(extname(path).toLowerCase())) return { path, valid: false, reason: `Expected a supported ${kind} file.` }
+      const details = await stat(path).catch(() => null)
+      if (!details?.isFile() || details.size < 1) return { path, valid: false, reason: 'File is missing or empty.' }
+      return { path, valid: true }
+    }))
+  })
+  ipcMain.handle('video:metadata', async (_event, source: string, ffmpegPath: string) => {
+    const input = await resolveVideoSource(source)
+    return probeClipVideoMetadata(input, ffmpegPath)
+  })
+  ipcMain.handle('clip-master:frames', async (_event, source: string, frames: Array<{ index: number; role: 'start' | 'end' | 'frame' }>, outputDirectory: string, ffmpegPath: string, sourceName: string) => {
+    if (!Array.isArray(frames) || !frames.length || frames.length > 100) throw new Error('Choose between 1 and 100 frames to save.')
+    const settings = await loadSettings()
+    if (normalize(outputDirectory).toLowerCase() !== normalize(settings.clipMasterOutputDirectory).toLowerCase()) throw new Error('Clip Master frames must be saved inside the configured Clip Master output folder.')
+    const input = await resolveVideoSource(source)
+    const metadata = await probeClipVideoMetadata(input, ffmpegPath)
+    if (frames.some((item) => !Number.isFinite(Number(item.index)) || Number(item.index) < 0 || Math.floor(Number(item.index)) >= metadata.frameCount)) throw new Error(`Choose frame indexes between 0 and ${metadata.frameCount - 1}.`)
+    const folder = join(outputDirectory, 'ClipMaster', clipMasterSlug(sourceName))
+    await mkdir(folder, { recursive: true })
+    const files: Array<{ path: string; name: string; index: number; role: 'start' | 'end' | 'frame' }> = []
+    for (const item of frames) {
+      const index = Math.max(0, Math.floor(Number(item.index)))
+      if (!Number.isFinite(index)) continue
+      const label = item.role === 'start' ? 'start_frame' : item.role === 'end' ? 'end_frame' : 'frame'
+      const output = await nextClipMasterPath(folder, `${clipMasterSlug(sourceName)}_${label}_${String(index).padStart(4, '0')}`, 'png')
+      await runFfmpeg(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-i', input, '-vf', `select=eq(n\\,${index})`, '-vsync', 'vfr', '-frames:v', '1', '-update', '1', '-y', output])
+      const created = await stat(output).catch(() => null)
+      if (!created?.size) throw new Error(`FFmpeg did not produce frame ${index}.`)
+      files.push({ path: output, name: basename(output), index, role: item.role })
+    }
+    return { folder, files }
+  })
+  ipcMain.handle('clip-master:choose-export-path', async (_event, outputDirectory: string, sourceName: string) => {
+    const folder = join(outputDirectory, 'ClipMaster', clipMasterSlug(sourceName))
+    const suggested = await nextClipMasterPath(folder, `${clipMasterSlug(sourceName)}_clipmaster`, 'mp4', true)
+    const result = await dialog.showSaveDialog({
+      title: 'Export Clip Master video',
+      defaultPath: suggested,
+      filters: [{ name: 'MP4 video', extensions: ['mp4'] }],
+    })
+    return result.canceled || !result.filePath ? null : result.filePath
+  })
+  ipcMain.handle('clip-master:trim', async (_event, source: string, startFrame: number, endFrame: number, fps: number, outputPath: string, ffmpegPath: string) => {
+    const start = Math.max(0, Math.floor(Number(startFrame))); const end = Math.max(start, Math.floor(Number(endFrame))); const requestedRate = Number(fps)
+    if (!Number.isFinite(start) || !Number.isFinite(end) || !Number.isFinite(requestedRate) || requestedRate <= 0) throw new Error('Choose a valid frame range and frame rate.')
+    if (!isAbsolute(outputPath) || extname(outputPath).toLowerCase() !== '.mp4') throw new Error('Choose a valid .mp4 export file location.')
+    if (existsSync(outputPath)) throw new Error(`“${basename(outputPath)}” already exists. Choose a new versioned filename so no earlier export is overwritten.`)
+    const input = await resolveVideoSource(source)
+    const metadata = await probeClipVideoMetadata(input, ffmpegPath)
+    if (end >= metadata.frameCount) throw new Error(`End frame ${end} is outside this clip. The final frame is ${metadata.frameCount - 1}.`)
+    const rate = metadata.fps
+    const folder = dirname(outputPath); await mkdir(folder, { recursive: true })
+    const duration = (end - start + 1) / rate
+    const startSeconds = start / rate
+    const endSeconds = startSeconds + duration
+    const outputRate = Number.isInteger(rate) ? String(rate) : rate.toFixed(6)
+    // select + setpts produces a frame-indexed CFR timeline. Do not combine
+    // output -r with VFR fps_mode: newer FFmpeg rejects that contradictory pair.
+    try {
+      await runFfmpeg(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-i', input, '-vf', `select=between(n\\,${start}\\,${end}),setpts=N/${outputRate}/TB`, '-af', `atrim=start=${startSeconds}:end=${endSeconds},asetpts=PTS-STARTPTS`, '-t', duration.toFixed(6), '-map', '0:v:0', '-map', '0:a?', '-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-pix_fmt', 'yuv420p', '-r', outputRate, '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', '-y', outputPath])
+    } catch (error) {
+      // A failed encode can leave a tiny, unusable MP4 behind. Remove only
+      // that newly requested export so retrying the same save path is safe.
+      await unlink(outputPath).catch(() => undefined)
+      throw error
+    }
+    const created = await stat(outputPath).catch(() => null); if (!created?.size) throw new Error('FFmpeg completed without producing the Clip Master export.')
+    return { path: outputPath, name: basename(outputPath), url: `minimax-media://local?path=${encodeURIComponent(outputPath)}`, folder, frameCount: end - start + 1, duration }
+  })
   ipcMain.handle('video:frame', async (_event, source: string, position: number | 'last', outputDirectory: string, ffmpegPath: string) => {
     const input = await resolveVideoSource(source)
     const framesDirectory = join(outputDirectory, 'Oyama AI Video Studio Frames')
@@ -1039,11 +1424,45 @@ app.whenReady().then(async () => {
     const label = position === 'last' ? 'last' : `at_${Math.max(0, position).toFixed(2).replace('.', '-')}`
     const name = `frame_${label}_${Date.now()}.png`
     const output = join(framesDirectory, name)
-    const seek = position === 'last' ? ['-sseof', '-0.15'] : ['-ss', String(Math.max(0, position))]
-    await runFfmpeg(ffmpegPath, ['-hide_banner', '-loglevel', 'error', ...seek, '-i', input, '-map', '0:v:0', '-frames:v', '1', '-update', '1', '-y', output])
+    if (position === 'last') {
+      const metadata = await probeClipVideoMetadata(input, ffmpegPath)
+      const lastFrame = Math.max(0, metadata.frameCount - 1)
+      await runFfmpeg(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-i', input, '-map', '0:v:0', '-vf', `select=eq(n\\,${lastFrame})`, '-vsync', 'vfr', '-frames:v', '1', '-update', '1', '-y', output])
+    } else {
+      await runFfmpeg(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-ss', String(Math.max(0, position)), '-i', input, '-map', '0:v:0', '-frames:v', '1', '-update', '1', '-y', output])
+    }
     const extracted = await stat(output).catch(() => null)
     if (!extracted?.size) throw new Error('FFmpeg completed without producing a frame. Check that the clip contains a video stream.')
     return { path: output, name }
+  })
+  ipcMain.handle('video:thumbnail', async (_event, source: string, ffmpegPath: string) => {
+    // A completed render may only have a guarded ComfyUI URL when its output
+    // directory differs from the configured local folder.
+    const remote = source.startsWith('minimax-media:') && new URL(source).hostname === 'comfy'
+    const localInput = remote ? null : await resolveVideoSource(source)
+    const sourceStat = localInput ? await stat(localInput) : null
+    const root = join(app.getPath('userData'), 'video-thumbnails')
+    await mkdir(root, { recursive: true })
+    const key = createHash('sha256').update(`v2|${localInput ?? source}|${sourceStat?.size ?? ''}|${sourceStat?.mtimeMs ?? ''}`).digest('hex')
+    const output = join(root, `${key}.jpg`)
+    if (!existsSync(output)) {
+      const temporary = join(root, `${key}-${randomUUID()}.jpg`)
+      let input: string | null = localInput
+      try {
+        if (!input) input = await resolveVideoSource(source)
+        const videoInput = input
+        const metadata = await probeClipVideoMetadata(videoInput, ffmpegPath).catch(() => null)
+        const position = metadata?.duration ? Math.min(2, metadata.duration / 3) : 0.2
+        const extract = (at: number) => runFfmpeg(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-ss', String(at), '-i', videoInput, '-map', '0:v:0', '-frames:v', '1', '-vf', 'scale=480:270:force_original_aspect_ratio=decrease:force_divisible_by=2', '-q:v', '4', '-y', temporary])
+        await extract(position).catch(() => extract(0))
+        if (!(await stat(temporary)).size) throw new Error('FFmpeg did not create a thumbnail.')
+        await rename(temporary, output).catch(async (error) => { if (!existsSync(output)) throw error })
+      } finally {
+        await unlink(temporary).catch(() => undefined)
+        if (remote && input) await unlink(input).catch(() => undefined)
+      }
+    }
+    return `minimax-media://thumbnail?path=${encodeURIComponent(output)}&v=2`
   })
   ipcMain.handle('video:frames', async (_event, source: string, positions: number[], outputDirectory: string, ffmpegPath: string) => {
     if (!Array.isArray(positions) || positions.length === 0 || positions.length > 100 || positions.some((position) => !Number.isFinite(position) || position < 0)) {
@@ -1086,6 +1505,37 @@ app.whenReady().then(async () => {
     const created = await stat(output).catch(() => null)
     if (!created?.size) throw new Error('FFmpeg completed without producing a reference clip.')
     return { path: output, name }
+  })
+  ipcMain.handle('clip-master:splice', async (_event, clips: Array<{ source: string; startFrame: number; endFrame: number }>, outputDirectory: string, ffmpegPath: string) => {
+    if (!Array.isArray(clips) || !clips.length || clips.length > 100) throw new Error('Select between 1 and 100 segments.')
+    const temporary: string[] = []
+    const directory = join(outputDirectory, 'ClipMaster')
+    await mkdir(directory, { recursive: true })
+    const output = join(directory, `Sequence_${randomUUID()}.mp4`)
+    try {
+      let target: ClipVideoMetadata | undefined
+      for (const clip of clips) {
+        const input = await resolveVideoSource(clip.source)
+        const meta = await probeClipVideoMetadata(input, ffmpegPath)
+        if (!Number.isInteger(clip.startFrame) || !Number.isInteger(clip.endFrame) || clip.startFrame < 0 || clip.endFrame < clip.startFrame || clip.endFrame >= meta.frameCount) throw new Error('Invalid segment frame range.')
+        target ??= meta
+        const duration = (clip.endFrame - clip.startFrame + 1) / meta.fps
+        const audio = JSON.parse(await runFfprobe(ffmpegPath, ['-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=index', '-of', 'json', input])) as { streams?: unknown[] }
+        const segment = join(app.getPath('temp'), `oyama-segment-${randomUUID()}.mp4`)
+        temporary.push(segment)
+        const width = Math.ceil(target.width / 2) * 2, height = Math.ceil(target.height / 2) * 2
+        const args = ['-hide_banner', '-loglevel', 'error', '-i', input]
+        if (!audio.streams?.length) args.push('-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo')
+        args.push('-vf', `trim=start_frame=${clip.startFrame}:end_frame=${clip.endFrame + 1},setpts=PTS-STARTPTS,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${target.fps}`, '-af', audio.streams?.length ? `atrim=start=${clip.startFrame / meta.fps}:duration=${duration},asetpts=PTS-STARTPTS,apad` : 'anull', '-map', '0:v:0', '-map', audio.streams?.length ? '0:a:0' : '1:a:0', '-t', String(duration), '-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', '-video_track_timescale', '90000', '-y', segment)
+        await runFfmpeg(ffmpegPath, args)
+      }
+      const list = join(app.getPath('temp'), `oyama-sequence-${randomUUID()}.txt`)
+      await writeFile(list, temporary.map(path => `file '${path.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n'))
+      temporary.push(list)
+      await runFfmpeg(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', '-movflags', '+faststart', '-n', output])
+      return { path: output, url: `minimax-media://local?path=${encodeURIComponent(output)}` }
+    } catch (error) { await unlink(output).catch(() => undefined); throw error }
+    finally { await Promise.all(temporary.map(path => unlink(path).catch(() => undefined))) }
   })
   ipcMain.handle('video:join', async (_event, clips: Array<{ source: string; start?: number; end?: number }>, outputDirectory: string, ffmpegPath: string) => {
     if (!Array.isArray(clips) || clips.length < 2) throw new Error('Add at least two clips to join.')
