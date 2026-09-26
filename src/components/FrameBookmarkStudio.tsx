@@ -4,7 +4,7 @@ import type { AppSettings, MediaFile } from '../types'
 import { createId } from '../lib/createId'
 import { ReliableVideo } from './ReliableVideo'
 
-export type BookmarkVideo = { id: string; name: string; source: string; duration?: number; provider?: 'minimax' | 'ltx25' }
+export type BookmarkVideo = { id: string; name: string; source: string; duration?: number; provider?: 'minimax' | 'ltx25' | 'ltxripple' }
 type FrameBookmark = { id: string; label: string; time: number; frame?: MediaFile }
 type BookmarkProject = BookmarkVideo & { createdAt: number; updatedAt: number; bookmarks: FrameBookmark[] }
 
@@ -142,7 +142,7 @@ export function FrameBookmarkStudio({ initialVideo, videos, settings, onClose, o
           <section className="frame-viewer">
             <div className="frame-video-stage"><ReliableVideo videoRef={node => { videoRef.current = node }} src={active.source} controls playsInline preload="metadata" onLoadedMetadata={(event) => { const nextDuration = event.currentTarget.duration; if (Number.isFinite(nextDuration)) patchProject(active.id, (project) => ({ ...project, duration: nextDuration })) }} onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)} /></div>
             <div className="bookmark-timeline"><div><span><Clock3 size={13} />{timecode(currentTime)}</span><span>{timecode(duration)}</span></div><input aria-label="Frame position" type="range" min="0" max={duration} step={1 / 24} value={Math.min(currentTime, duration)} onChange={(event) => seek(Number(event.target.value))} />{active.bookmarks.map((bookmark) => <button key={bookmark.id} style={{ left: `${Math.min(100, (bookmark.time / duration) * 100)}%` }} onClick={() => seek(bookmark.time)} aria-label={`Seek to ${bookmark.label} at ${timecode(bookmark.time)}`} title={`${bookmark.label} · ${timecode(bookmark.time)}`}><span /></button>)}</div>
-            <div className="frame-viewer-actions"><span><strong>{active.name}</strong><small>{active.provider === 'ltx25' ? 'LTX 2.5 render' : active.provider === 'minimax' ? 'MiniMax H3 render' : 'Local video'} · {active.bookmarks.length} bookmark{active.bookmarks.length === 1 ? '' : 's'}</small></span><button className="primary-button" onClick={addBookmark}><Plus size={15} />Add bookmark here</button></div>
+            <div className="frame-viewer-actions"><span><strong>{active.name}</strong><small>{active.provider === 'ltxripple' ? 'LTX Ripple edit' : active.provider === 'ltx25' ? 'LTX 2.5 render' : active.provider === 'minimax' ? 'MiniMax H3 render' : 'Local video'} · {active.bookmarks.length} bookmark{active.bookmarks.length === 1 ? '' : 's'}</small></span><button className="primary-button" onClick={addBookmark}><Plus size={15} />Add bookmark here</button></div>
           </section>
           <aside className="bookmark-list-panel">
             <header><span><strong>Clip bookmarks</strong><small>Frame-accurate positions at 24 fps</small></span><button className="secondary-button" disabled={!active.bookmarks.some((bookmark) => !bookmark.frame) || Boolean(busy)} onClick={() => void extractAll()}>{busy === 'all' ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}Extract all</button></header>

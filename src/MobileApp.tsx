@@ -325,7 +325,7 @@ export default function MobileApp() {
 
   const cancel = async () => {
     if (!promptId) return
-    try { await lanFetch('/api/lan/cancel', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ promptId }) }); cancelled.current = true; setPromptId(''); setStatus('ready'); setProgress(0); setProgressLabel('Cancelled'); setMessage('Generation cancelled.') }
+    try { const result = await lanFetch<{ cancelled: boolean; state: 'running' | 'pending' | 'finished' | 'unknown' }>('/api/lan/cancel', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ promptId }) }); if (!result.cancelled) { setMessage(result.state === 'finished' ? 'The generation already finished. Waiting for its output…' : 'ComfyUI no longer reports this generation. Check the desktop Queue before retrying.'); return }; cancelled.current = true; setPromptId(''); setStatus('ready'); setProgress(0); setProgressLabel('Cancelled'); setMessage('Generation cancelled.') }
     catch (error) { setStatus('error'); setMessage(error instanceof Error ? error.message : String(error)) }
   }
 

@@ -16,8 +16,9 @@ type H3PromptEditorProps = {
   ariaLabel?: string
   placeholder?: string
   completion?: string
-  onAcceptCompletion?(): void
+  onAcceptCompletion?(range: { start: number; end: number }): void
   idPrefix?: string
+  productionMenu?: { id: string; activeId?: string }
   onProductionCommandChange?(trigger: ProductionCommandTrigger | null): void
   onProductionCommandKeyDown?(event: ReactKeyboardEvent<HTMLTextAreaElement>): boolean | void
 }
@@ -43,7 +44,7 @@ function existingTag(value: string, tag: string) {
   return match ? { start: match.index, end: match.index + match[0].length } : null
 }
 
-export const H3PromptEditor = forwardRef<H3PromptEditorHandle, H3PromptEditorProps>(function H3PromptEditor({ value, onChange, ariaLabel = 'Video prompt', placeholder, completion = '', onAcceptCompletion, idPrefix = 'h3-prompt', onProductionCommandChange, onProductionCommandKeyDown }, forwardedRef) {
+export const H3PromptEditor = forwardRef<H3PromptEditorHandle, H3PromptEditorProps>(function H3PromptEditor({ value, onChange, ariaLabel = 'Video prompt', placeholder, completion = '', onAcceptCompletion, idPrefix = 'h3-prompt', productionMenu, onProductionCommandChange, onProductionCommandKeyDown }, forwardedRef) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [trigger, setTrigger] = useState<{ start: number; query: string } | null>(null)
   const [active, setActive] = useState(0)
@@ -105,13 +106,13 @@ export const H3PromptEditor = forwardRef<H3PromptEditorHandle, H3PromptEditorPro
       onChange(`${before}${prefix}${text}${suffix}${after}`)
       setTrigger(null)
       onProductionCommandChange?.(null)
-      placeCursor(start + prefix.length + text.length + suffix.length)
+      placeCursor(start + prefix.length + text.length)
     },
   }), [onChange, onProductionCommandChange, value])
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (!trigger || !matches.length) {
       if (onProductionCommandKeyDown?.(event)) return
-      if (event.key === 'Tab' && completion && onAcceptCompletion) { event.preventDefault(); onAcceptCompletion() }
+      if (event.key === 'Tab' && completion && onAcceptCompletion) { event.preventDefault(); onAcceptCompletion({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd }) }
       return
     }
     if (event.key === 'ArrowDown') { event.preventDefault(); setActive(index => (index + 1) % matches.length) }
@@ -121,7 +122,7 @@ export const H3PromptEditor = forwardRef<H3PromptEditorHandle, H3PromptEditorPro
   }
 
   return <div className="h3-prompt-editor">
-    <textarea ref={textareaRef} aria-label={ariaLabel} aria-autocomplete="list" aria-expanded={Boolean(trigger)} aria-controls={trigger ? `${idPrefix}-tag-options` : undefined} aria-activedescendant={trigger && matches[active] ? `${idPrefix}-tag-${matches[active].tag.slice(2)}` : undefined} value={value} onChange={event => { onChange(event.target.value); updateTrigger(event.currentTarget) }} onClick={event => updateTrigger(event.currentTarget)} onKeyUp={event => { if (!['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) updateTrigger(event.currentTarget) }} onKeyDown={handleKeyDown} onBlur={event => { if (!event.currentTarget.parentElement?.contains(event.relatedTarget as Node | null)) setTrigger(null) }} onContextMenu={event => { event.preventDefault(); textareaRef.current?.setSelectionRange(event.currentTarget.selectionStart, event.currentTarget.selectionEnd); setTrigger(null); onProductionCommandChange?.(null); setContextMenu({ x: event.clientX, y: event.clientY }) }} placeholder={placeholder} />
+    <textarea ref={textareaRef} aria-label={ariaLabel} aria-autocomplete="list" aria-expanded={Boolean(trigger || productionMenu)} aria-controls={trigger ? `${idPrefix}-tag-options` : productionMenu?.id} aria-activedescendant={trigger && matches[active] ? `${idPrefix}-tag-${matches[active].tag.slice(2)}` : productionMenu?.activeId} value={value} onChange={event => { onChange(event.target.value); updateTrigger(event.currentTarget) }} onClick={event => updateTrigger(event.currentTarget)} onKeyUp={event => { if (!['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) updateTrigger(event.currentTarget) }} onKeyDown={handleKeyDown} onBlur={event => { if (!event.currentTarget.parentElement?.contains(event.relatedTarget as Node | null)) setTrigger(null) }} onContextMenu={event => { event.preventDefault(); textareaRef.current?.setSelectionRange(event.currentTarget.selectionStart, event.currentTarget.selectionEnd); setTrigger(null); onProductionCommandChange?.(null); setContextMenu({ x: event.clientX, y: event.clientY }) }} placeholder={placeholder} />
     {trigger && <div id={`${idPrefix}-tag-options`} className="h3-tag-autocomplete" role="listbox" aria-label="Prompt tags">
       <div className="h3-tag-autocomplete-title"><Hash size={13} /><span>{matches.length ? 'Insert prompt tag' : 'No matching prompt tag'}</span><kbd>Esc</kbd></div>
       {matches.map((item, index) => <button type="button" id={`${idPrefix}-tag-${item.tag.slice(2)}`} role="option" aria-selected={index === active} className={index === active ? 'active' : ''} key={item.tag} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActive(index)} onClick={() => insertTag(item, true)}><code>{item.tag}</code><span>{item.description}</span>{existingTag(value, item.tag) && <em><Check size={11} />Added</em>}</button>)}
@@ -131,6 +132,6 @@ export const H3PromptEditor = forwardRef<H3PromptEditorHandle, H3PromptEditorPro
       <header><Hash size={14} /><span>Insert prompt tag</span></header>
       {promptMarkupLegend.map(item => { const exists = existingTag(value, item.tag); return <button type="button" role="menuitem" key={item.tag} onClick={() => insertTag(item)}><code>{item.tag}</code><span>{exists ? 'Go to section' : item.description}</span>{exists ? <Check size={13} /> : <ChevronRight size={13} />}</button> })}
     </div>}
-    {completion && <button type="button" className="h3-inline-completion" onClick={onAcceptCompletion}><span>Local autocomplete</span><p>{completion}</p><kbd>Tab to accept</kbd></button>}
+    {completion && <button type="button" className="h3-inline-completion" onMouseDown={event => event.preventDefault()} onClick={() => { const textarea = textareaRef.current; if (textarea) onAcceptCompletion?.({ start: textarea.selectionStart, end: textarea.selectionEnd }) }}><span>Local autocomplete</span><p>{completion}</p><kbd>Tab to accept</kbd></button>}
   </div>
 })

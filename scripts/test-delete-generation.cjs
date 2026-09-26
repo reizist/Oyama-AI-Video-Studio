@@ -60,7 +60,7 @@ main().catch((error) => { console.error(error); process.exitCode = 1 })
 // Run the shared history deletion handler with mocked state/IPC.
 const app = readFileSync('src/App.tsx', 'utf8')
 const start = app.indexOf('  const deleteGeneration = async')
-const end = app.indexOf('  const selectActiveJob', start)
+const end = app.indexOf('  const loadReferenceAccessory', start)
 assert.ok(start > 0 && end > start)
 async function testHistory(status, mode, outputResult) {
   let jobs = [{ id: 'target', status, localOutputPath: '/output/video.mp4' }, { id: 'keep', status: 'completed' }]

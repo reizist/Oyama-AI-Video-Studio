@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
+let nextStreamingRequestId = 0
+
 async function invokeLocalLlm(channel: string, ...args: unknown[]) {
   try {
     return await ipcRenderer.invoke(channel, ...args)
@@ -10,11 +12,29 @@ async function invokeLocalLlm(channel: string, ...args: unknown[]) {
   }
 }
 
+async function invokeStreamingLocalLlm(channel: string, args: unknown[], onUpdate: (update: { thinking: string; content: string }) => void) {
+  const requestId = `llm-${Date.now()}-${++nextStreamingRequestId}`
+  let latest: { thinking: string; content: string } | null = null
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const listener = (_event: Electron.IpcRendererEvent, id: string, update: { thinking: string; content: string }) => {
+    if (id !== requestId) return
+    latest = update
+    if (!timer) timer = setTimeout(() => { timer = null; if (latest) onUpdate(latest) }, 80)
+  }
+  ipcRenderer.on('llm:stream-update', listener)
+  try { return await invokeLocalLlm(channel, ...args, requestId) }
+  finally {
+    ipcRenderer.removeListener('llm:stream-update', listener)
+    if (timer) clearTimeout(timer)
+    if (latest) onUpdate(latest)
+  }
+}
+
 contextBridge.exposeInMainWorld('minimax', {
   getObjectInfo: (url: string) => ipcRenderer.invoke('comfy:info', url),
   uploadImageData: (url: string, data: string) => ipcRenderer.invoke('comfy:upload-data', url, data),
   getOutputImage: (url: string, file: unknown) => ipcRenderer.invoke('comfy:output-image', url, file),
-  saveComfyOutputImage: (url: string, file: unknown, outputDirectory: string) => ipcRenderer.invoke('comfy:save-output-image', url, file, outputDirectory),
+  saveComfyOutputImage: (url: string, file: unknown, outputDirectory: string, purpose?: 'character' | 'photo-edit' | 'image-creation') => ipcRenderer.invoke('comfy:save-output-image', url, file, outputDirectory, purpose),
   saveStillImage: (url: string, file: unknown, outputDirectory: string) => ipcRenderer.invoke('comfy:save-still-image', url, file, outputDirectory),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   getLegacyMigrationStatus: () => ipcRenderer.invoke('migration:legacy-status'),
@@ -57,9 +77,10 @@ contextBridge.exposeInMainWorld('minimax', {
   findLatestOutput: (outputPath: string, since: number, kind: 'video' | 'audio' = 'video') => ipcRenderer.invoke('outputs:latest', outputPath, since, kind),
   resolveOutput: (outputPath: string, file: { filename: string; subfolder?: string; type?: string }) => ipcRenderer.invoke('outputs:resolve', outputPath, file),
   getLocalLlmStatus: (url: string, provider: 'ollama' | 'lmstudio' = 'ollama') => invokeLocalLlm('ollama:status', url, provider),
-  generateWithOllama: (url: string, model: string, prompt: string, provider: 'ollama' | 'lmstudio' = 'ollama') => invokeLocalLlm('ollama:generate', url, model, prompt, provider),
+  generateWithOllama: (url: string, model: string, prompt: string, provider: 'ollama' | 'lmstudio' = 'ollama', onUpdate?: (update: { thinking: string; content: string }) => void) => onUpdate ? invokeStreamingLocalLlm('ollama:generate', [url, model, prompt, provider], onUpdate) : invokeLocalLlm('ollama:generate', url, model, prompt, provider),
+  generatePromptCompletion: (url: string, model: string, context: string, provider: 'ollama' | 'lmstudio' = 'ollama') => invokeLocalLlm('llm:prompt-completion', url, model, context, provider),
   generateWithOllamaVision: (url: string, model: string, prompt: string, imagePaths: string[], provider: 'ollama' | 'lmstudio' = 'ollama') => invokeLocalLlm('ollama:vision', url, model, prompt, imagePaths, provider),
-  generateStructuredWithOllama: (url: string, model: string, prompt: string, schema: Record<string, unknown>, provider: 'ollama' | 'lmstudio' = 'ollama', imagePaths: string[] = []) => invokeLocalLlm('ollama:structured', url, model, prompt, schema, provider, imagePaths),
+  generateStructuredWithOllama: (url: string, model: string, prompt: string, schema: Record<string, unknown>, provider: 'ollama' | 'lmstudio' = 'ollama', imagePaths: string[] = [], onUpdate?: (update: { thinking: string; content: string }) => void) => onUpdate ? invokeStreamingLocalLlm('ollama:structured', [url, model, prompt, schema, provider, imagePaths], onUpdate) : invokeLocalLlm('ollama:structured', url, model, prompt, schema, provider, imagePaths),
   getLanStatus: () => ipcRenderer.invoke('lan:status'),
   syncMobileCharacters: (characters: unknown[]) => ipcRenderer.invoke('lan:sync-characters', characters),
   rotateLanToken: () => ipcRenderer.invoke('lan:rotate-token'),
@@ -69,4 +90,6 @@ contextBridge.exposeInMainWorld('minimax', {
   openMovieEditor: () => ipcRenderer.invoke('window:open-movie-editor'),
   exportVideo: (source: string, suggestedName: string) => ipcRenderer.invoke('video:export', source, suggestedName),
   prepareContinuationSource: (sources: string[], throughTime: number | null, outputDirectory: string, ffmpegPath: string) => ipcRenderer.invoke('video:continuation-source', sources, throughTime, outputDirectory, ffmpegPath),
+  prepareRippleChunkSource: (source: string, startFrame: number, sourceFrames: number, outputDirectory: string, ffmpegPath: string) => ipcRenderer.invoke('video:ripple-chunk-source', source, startFrame, sourceFrames, outputDirectory, ffmpegPath),
+  assembleRippleChunks: (clips: Array<{ source: string; sourceFrames: number; overlapFrames: number }>, originalSource: string, duration: number, width: number, height: number, blend: boolean, outputDirectory: string, ffmpegPath: string) => ipcRenderer.invoke('video:ripple-assemble', clips, originalSource, duration, width, height, blend, outputDirectory, ffmpegPath),
 })

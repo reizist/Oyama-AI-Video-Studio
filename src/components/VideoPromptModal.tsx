@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, Clock3, Search, WandSparkles, X } from 'lucide-react'
-import { promptCommandScore, promptPresetCategories, promptPresets } from '../lib/promptPresets'
+import { findPromptCommands, promptPresetCategories } from '../lib/promptPresets'
 import type { PromptPreset, PromptPresetCategory } from '../types'
 import { H3PromptEditor, type H3PromptEditorHandle, type ProductionCommandTrigger } from './H3PromptEditor'
 
@@ -20,12 +20,7 @@ export function VideoPromptModal({ value, promptingTool, onChange, onPromptTool,
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState<'all' | PromptPresetCategory>('all')
   const [active, setActive] = useState(0)
-  const results = useMemo(() => promptPresets
-    .filter(item => category === 'all' || item.category === category)
-    .map(item => ({ item, score: promptCommandScore(item, query) }))
-    .filter(result => Number.isFinite(result.score))
-    .sort((a, b) => a.score - b.score || a.item.label.localeCompare(b.item.label))
-    .map(result => result.item), [category, query])
+  const results = useMemo(() => findPromptCommands(query, category), [category, query])
 
   useEffect(() => { setActive(0) }, [category, query])
   useEffect(() => {

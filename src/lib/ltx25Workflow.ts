@@ -78,7 +78,7 @@ export function buildLtx25Workflow(
     }
   }
   prompt['12'].inputs.model = modelLink
-  if (options.previewOverride) {
+  if (options.livePreview !== false && options.previewOverride) {
     prompt['46'] = {
       class_type: options.previewOverride.nodeType,
       inputs: { model: modelLink, preview_rate: options.previewOverride.fps, vae: videoVaeLink },
@@ -138,8 +138,10 @@ export function buildLtx25Workflow(
   prompt['40'] = { class_type: 'VAEDecodeTiled', inputs: { samples: finalVideo, vae: videoVaeLink, tile_size: 512, overlap: 64, temporal_size: 64, temporal_overlap: 16 } }
   prompt['41'] = { class_type: 'LTXVAudioVAEDecode', inputs: { samples: finalAudio, audio_vae: audioVaeLink } }
   prompt['42'] = { class_type: 'CreateVideo', inputs: { images: ['40', 0], audio: ['41', 0], fps: 24, bit_depth: 8, color_space: 'sRGB' } }
-  prompt['43'] = { class_type: 'SaveVideo', inputs: { video: ['42', 0], filename_prefix: options.filenamePrefix, format: 'auto', codec: 'auto' } }
-  prompt['44'] = { class_type: 'ImageFromBatch', inputs: { image: ['40', 0], batch_index: 0, length: 1 } }
-  prompt['45'] = { class_type: 'PreviewImage', inputs: { images: ['44', 0] } }
+  prompt['43'] = { class_type: 'SaveVideo', inputs: { video: ['42', 0], filename_prefix: options.filenamePrefix, format: 'auto', 'format.codec': 'auto' } }
+  if (options.livePreview !== false) {
+    prompt['44'] = { class_type: 'ImageFromBatch', inputs: { image: ['40', 0], batch_index: 0, length: 1 } }
+    prompt['45'] = { class_type: 'PreviewImage', inputs: { images: ['44', 0] } }
+  }
   return prompt
 }

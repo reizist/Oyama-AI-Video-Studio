@@ -75,6 +75,28 @@ async function main() {
       await assert.rejects(prepare(null, [input], -1, folder, ffmpeg), /valid source frame/)
     }
     const input = path.join(folder, '30.mp4')
+    const configuredOutput = path.join(folder, 'configured-output')
+    const detectedOutput = path.join(folder, 'detected-output')
+    const renderedFolder = path.join(detectedOutput, 'continuations', 'scene')
+    await fsp.mkdir(renderedFolder, { recursive: true })
+    await fsp.copyFile(input, path.join(renderedFolder, 'beat-1.mp4'))
+    const settings = { comfyUrl: 'http://127.0.0.1:8188', outputDirectory: configuredOutput }
+    const trustedOutput = namedFunction('trustedComfyOutputDirectory', {
+      normalize: path.normalize, cleanUrl: value => value.replace(/\/+$/, ''),
+      observedComfyOutput: null, AbortSignal,
+      comfyOutputFromStats: namedFunction('comfyOutputFromStats', {}),
+      comfyFetch: async () => ({ system: { argv: ['python', 'main.py', '--output-directory', detectedOutput] } }),
+    })
+    assert.equal(await trustedOutput(settings, detectedOutput), true, 'The actual ComfyUI output folder is trusted')
+    assert.equal(await trustedOutput(settings, path.join(folder, 'unrelated')), false, 'An unrelated folder is not trusted')
+    const resolveOutput = handler('outputs:resolve', {
+      loadSettings: async () => settings,
+      trustedComfyOutputDirectory: trustedOutput,
+      resolveComfyOutput: namedFunction('resolveComfyOutput', { ...path, existsSync: fs.existsSync }),
+    })
+    assert.equal(await resolveOutput(null, detectedOutput, { filename: 'beat-1.mp4', subfolder: 'continuations/scene', type: 'output' }), path.join(renderedFolder, 'beat-1.mp4'), 'The next beat receives the completed clip from ComfyUI’s detected output folder')
+    assert.equal(await resolveOutput(null, path.join(folder, 'unrelated'), { filename: 'beat-1.mp4', type: 'output' }), null)
+    assert.equal(await resolveOutput(null, detectedOutput, { filename: '../../beat-1.mp4', type: 'output' }), null)
     const localMediaResponse = namedFunction('localMediaResponse', {
       stat: fsp.stat, createReadStream: fs.createReadStream, extname: path.extname,
       Readable, Response, Headers,

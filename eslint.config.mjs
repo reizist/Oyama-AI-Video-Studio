@@ -8,7 +8,7 @@ export default tseslint.config(
   { ignores: ['dist', 'dist-electron', 'release', 'node_modules'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
-  { files: ['scripts/**/*.cjs'], languageOptions: { globals: { ...globals.node, WebSocket: 'readonly', fetch: 'readonly' } }, rules: { '@typescript-eslint/no-require-imports': 'off' } },
+  { files: ['scripts/**/*.cjs', '*.cjs'], languageOptions: { globals: { ...globals.node, WebSocket: 'readonly', fetch: 'readonly' } }, rules: { '@typescript-eslint/no-require-imports': 'off' } },
   {
     files: ['**/*.{ts,tsx}'],
     languageOptions: {

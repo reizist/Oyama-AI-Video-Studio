@@ -23,7 +23,7 @@ html, body, .app-shell, .main-area, .app-shell.studio-shell-active,
 .video-mode-bar, .studio-topbar { background:#101412 !important; border-color:var(--line) !important; box-shadow:none !important; }
 .studio-topbar, .video-mode-bar { background:linear-gradient(100deg,#0b0e0d,#151a17) !important; }
 .video-workspace-shell { color:var(--text) !important; }
-.video-workspace-main { gap:16px !important; padding:16px !important; }
+.video-workspace-main { gap:0 !important; padding:0 !important; }
 .app-shell.studio-shell-active {
   --sidebar:218px !important;
   grid-template:48px minmax(0,1fr) 34px / var(--sidebar) minmax(0,1fr) !important;
@@ -52,10 +52,10 @@ html, body, .app-shell, .main-area, .app-shell.studio-shell-active,
 .video-shell-active > .main-area { grid-column:2 !important; grid-row:1 !important; }
 .app-shell.video-shell-active.sidebar-collapsed { --sidebar:64px !important; }
 .video-workspace-main {
-  grid-template-columns:clamp(160px,15vw,220px) minmax(0,1fr) clamp(290px,25vw,350px) !important;
+  grid-template-columns:minmax(340px,1fr) minmax(330px,.95fr) !important;
 }
 .video-workspace-main:has(.video-asset-rail.collapsed) {
-  grid-template-columns:42px minmax(0,1fr) clamp(290px,25vw,350px) !important;
+  grid-template-columns:minmax(340px,1fr) minmax(330px,.95fr) !important;
 }
 .video-workspace-shell :is(.video-prompt-panel,.video-input-strip,.video-preview-stage,
   .video-inspector-section,.video-asset-empty,.video-preview-health,.video-generate-bar,
@@ -173,7 +173,7 @@ html, body, .app-shell, .main-area, .app-shell.studio-shell-active,
   background:var(--accent-soft) !important; color:var(--accent) !important;
 }
 @media (max-width:1180px) {
-  .video-workspace-main { gap:10px !important; padding:10px !important; }
+  .video-workspace-main { grid-template-columns:minmax(310px,1fr) minmax(290px,.85fr) !important; }
 }
 @media (max-width:1400px) {
   .video-project-name { display:none !important; }
@@ -181,11 +181,10 @@ html, body, .app-shell, .main-area, .app-shell.studio-shell-active,
 }
 @media (max-width:900px) {
   .app-shell.studio-shell-active, .app-shell.video-shell-active { --sidebar:64px !important; }
-  .video-workspace-main { grid-template-columns:160px minmax(0,1fr) minmax(260px,32vw) !important; }
   .video-prompt-panel > header { flex-wrap:wrap !important; gap:8px !important; }
   .video-prompt-panel > header > div { flex-wrap:wrap !important; justify-content:flex-start !important; }
 }
-@media (max-width:740px) {
+@media (max-width:760px) {
   .video-workspace-main, .video-workspace-main:has(.video-asset-rail.collapsed) {
     grid-template-columns:minmax(0,1fr) !important; overflow:auto !important;
   }

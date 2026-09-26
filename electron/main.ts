@@ -1,13 +1,19 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol, session, shell } from 'electron'
 import { constants, createReadStream, createWriteStream, existsSync } from 'node:fs'
-import { copyFile, cp, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
+import { copyFile, cp, mkdir, mkdtemp, readFile, readdir, rename, rmdir, stat, unlink, writeFile } from 'node:fs/promises'
 import { writeAtomicFile } from './atomicFile.js'
 import { trashOutput } from './trashOutput.js'
+import { cancelComfyPrompt } from './comfyCancellation.js'
+import { readGpuTelemetry } from './gpuTelemetry.js'
+import { restoreLegacyLocalStorage } from './legacyBrowserStorage.js'
+import { buildPromptCompletionRequest } from './promptCompletion.js'
+import { lmStudioEndpoint, parseLmStudioModels } from './lmStudioApi.js'
+import { readLlmStream, type LlmStreamUpdate } from './llmStream.js'
 import { basename, dirname, extname, isAbsolute, join, normalize, relative, resolve } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { networkInterfaces } from 'node:os'
+import { networkInterfaces, tmpdir } from 'node:os'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import WebSocket from 'ws'
@@ -74,8 +80,6 @@ type AppSettings = {
 }
 
 type LanStatus = { running: boolean; url?: string; desktopUrl?: string; port?: number; error?: string }
-type GpuTelemetryDevice = { index: number; name: string; usagePercent: number; vramPercent: number; vramUsedMb: number; vramTotalMb: number; vramFreeMb: number }
-type GpuTelemetry = { available: boolean; name?: string; usagePercent?: number; vramPercent?: number; vramUsedMb?: number; vramTotalMb?: number; devices?: GpuTelemetryDevice[] }
 type RenderBenchmark = { jobId: string; hardwareKey: string; hardwareLabel: string; provider: 'minimax'; mode: string; turbo: string; attention: string; width: number; height: number; duration: number; steps: number; engineMs: number; measuredAt: number }
 const ltxUpscaleRequiredNodes = ['VAEEncodeTiled', 'LatentUpscaleModelLoader', 'LTXVLatentUpsampler', 'VAEDecodeTiled', 'ImageFromBatch', 'RepeatImageBatch', 'ImageBatch']
 const ltxNativeRequiredNodes = ['LTXVConditioning', 'LTXVEmptyLatentAudio', 'EmptyLTXVLatentVideo', 'LTXVDualCFGGuider', 'LTXVSeparateAVLatent', 'LTXVConcatAVLatent', 'LTXVLatentUpsampler', 'LTXVAudioVAEDecode', 'ManualSigmas', 'VAEDecodeTiled', 'CLIPTextEncode', 'KSamplerSelect', 'SamplerCustomAdvanced']
@@ -83,35 +87,6 @@ let lanToken = ''
 let mobileCharacterLibrary: unknown[] = []
 let lanServer: Server | null = null
 let lanStatus: LanStatus = { running: false }
-
-function readGpuTelemetry(): Promise<GpuTelemetry> {
-  return new Promise((resolve) => {
-    const child = spawn('nvidia-smi', ['--query-gpu=name,utilization.gpu,memory.used,memory.total', '--format=csv,noheader,nounits'], { windowsHide: true })
-    let output = ''
-    let settled = false
-    const finish = (value: GpuTelemetry) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      resolve(value)
-    }
-    const timer = setTimeout(() => { child.kill(); finish({ available: false }) }, 1800)
-    child.stdout.on('data', (chunk) => { output += String(chunk) })
-    child.on('error', () => finish({ available: false }))
-    child.on('close', (code) => {
-      if (code !== 0 || !output.trim()) { finish({ available: false }); return }
-      const devices = output.trim().split(/\r?\n/).map((line, index) => {
-        const [name = `GPU ${index}`, usage = '', used = '', total = ''] = line.split(',').map((part) => part.trim())
-        const usagePercent = Number(usage) || 0
-        const vramUsedMb = Number(used) || 0
-        const vramTotalMb = Number(total) || 0
-        return { index, name, usagePercent, vramUsedMb, vramTotalMb, vramFreeMb: Math.max(0, vramTotalMb - vramUsedMb), vramPercent: vramTotalMb > 0 ? Math.round(vramUsedMb / vramTotalMb * 100) : 0 }
-      })
-      const primary = devices[0]
-      finish({ available: devices.length > 0, name: primary?.name, usagePercent: primary?.usagePercent, vramUsedMb: primary?.vramUsedMb, vramTotalMb: primary?.vramTotalMb, vramPercent: primary?.vramPercent, devices })
-    })
-  })
-}
 
 const modelKinds: ModelKind[] = ['diffusion_models', 'text_encoders', 'vae', 'loras', 'vae_approx', 'clip_vision']
 const modelExtensions = new Set(['.safetensors', '.pt', '.pth', '.gguf', '.onnx'])
@@ -187,7 +162,7 @@ function defaultSettings(): AppSettings {
     comfyUrl: 'http://127.0.0.1:8188',
     ollamaUrl: 'http://127.0.0.1:11434',
     ollamaModel: 'qwen3:latest',
-    lmStudioUrl: 'http://127.0.0.1:1234',
+    lmStudioUrl: 'http://127.0.0.1:1234/api/v1/',
     lmStudioModel: '',
     modelRoot: root,
     paths: Object.fromEntries(modelKinds.map((kind) => [kind, join(root, kind)])) as Record<ModelKind, string>,
@@ -228,7 +203,7 @@ function llmLabel(provider: LlmProvider) {
 }
 
 function lmStudioPath(url: string, path: string) {
-  return /\/v1\/?$/i.test(cleanUrl(url)) ? path : `/v1${path}`
+  return lmStudioEndpoint(url, path)
 }
 
 function assertLocalLmStudioUrl(value: string) {
@@ -246,12 +221,12 @@ function assertLlmUrl(value: string, provider: LlmProvider) {
   if (provider === 'lmstudio') assertLocalLmStudioUrl(value)
 }
 
-async function llmFetch(url: string, path: string, provider: LlmProvider, init?: RequestInit, timeoutMs = 600_000) {
+async function llmFetch(url: string, path: string, provider: LlmProvider, init?: RequestInit, timeoutMs = 600_000, onStream?: (update: LlmStreamUpdate) => void) {
   assertLlmUrl(url, provider)
   const label = llmLabel(provider)
   let response: Response
   try {
-    response = await fetch(`${cleanUrl(url)}${path}`, { ...init, signal: init?.signal ?? AbortSignal.timeout(timeoutMs) })
+    response = await fetch(provider === 'lmstudio' ? path : `${cleanUrl(url)}${path}`, { ...init, signal: init?.signal ?? AbortSignal.timeout(timeoutMs) })
   } catch (cause) {
     const timedOut = cause instanceof Error && (cause.name === 'TimeoutError' || cause.name === 'AbortError')
     if (timedOut) throw new Error(`${label} did not respond in time. Confirm the selected model is loaded, then try again.`)
@@ -267,27 +242,32 @@ async function llmFetch(url: string, path: string, provider: LlmProvider, init?:
     if (response.status === 404 && /model/i.test(detail)) throw new Error(`${detail.replace(/\s+/g, ' ')} Refresh models in Settings and choose an installed model.`)
     throw new Error(`${label} returned ${response.status}${detail ? `: ${detail.replace(/\s+/g, ' ').slice(0, 500)}` : '.'}`)
   }
+  if (onStream) {
+    if (!response.body) throw new Error(`${label} returned no response stream.`)
+    const result = await readLlmStream(response.body, provider, onStream)
+    return provider === 'lmstudio' ? { choices: [{ message: { content: result.content } }] } : { message: { content: result.content }, response: result.content }
+  }
   const contentType = response.headers.get('content-type') ?? ''
   return contentType.includes('application/json') ? response.json() : response.text()
 }
 
 async function listLlmModels(url: string, provider: LlmProvider) {
   if (provider === 'lmstudio') {
-    const result = await llmFetch(url, lmStudioPath(url, '/models'), provider, undefined, 10_000) as { data?: Array<{ id?: string; owned_by?: string }> }
-    return (result.data ?? []).filter((model) => model.id).map((model) => ({ name: model.id!, size: 0, family: model.owned_by ?? 'lmstudio', parameterSize: '', local: true }))
+    const result = await llmFetch(url, lmStudioPath(url, '/models'), provider, undefined, 10_000)
+    return parseLmStudioModels(result)
   }
   const data = await llmFetch(url, '/api/tags', provider, undefined, 10_000) as { models?: Array<{ name: string; size?: number; remote_model?: string; details?: { family?: string; parameter_size?: string } }> }
   return (data.models ?? []).map((model) => ({ name: model.name, size: model.size ?? 0, family: model.details?.family ?? '', parameterSize: model.details?.parameter_size ?? '', local: !model.remote_model && model.size !== 342 }))
 }
 
-async function generateWithLlm(url: string, model: string, prompt: string, provider: LlmProvider) {
+async function generateWithLlm(url: string, model: string, prompt: string, provider: LlmProvider, onStream?: (update: LlmStreamUpdate) => void) {
   if (provider === 'lmstudio') {
-    const data = await llmFetch(url, lmStudioPath(url, '/chat/completions'), provider, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], stream: false, temperature: 0.65, max_tokens: 1800 }) }) as { choices?: Array<{ message?: { content?: string } }>; error?: { message?: string } | string }
+    const data = await llmFetch(url, lmStudioPath(url, '/chat/completions'), provider, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], stream: Boolean(onStream), temperature: 0.65, max_tokens: 1800 }) }, 600_000, onStream) as { choices?: Array<{ message?: { content?: string } }>; error?: { message?: string } | string }
     const answer = finalOllamaAnswer(data.choices?.[0]?.message?.content ?? '')
     if (!answer) throw new Error(typeof data.error === 'string' ? data.error : data.error?.message || 'LM Studio returned an empty response.')
     return answer
   }
-  const data = await llmFetch(url, '/api/generate', provider, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, prompt, stream: false, keep_alive: '10m', think: false, options: { temperature: 0.65, num_predict: 1200 } }) }) as { response?: string; error?: string }
+  const data = await llmFetch(url, '/api/generate', provider, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, prompt, stream: Boolean(onStream), keep_alive: '10m', ...(!onStream ? { think: false } : {}), options: { temperature: 0.65, num_predict: 1200 } }) }, 600_000, onStream) as { response?: string; error?: string }
   const answer = data.response ? finalOllamaAnswer(data.response) : ''
   if (!answer) throw new Error(data.error || 'Ollama returned an empty response.')
   return answer
@@ -348,30 +328,42 @@ function pendingBrowserStorageMigrationPath() {
  * profile forward once so settings, intents, local projects, media references,
  * LAN pairing, and downloaded tools all stay available after the upgrade.
  */
-const legacyBrowserStateEntries = ['Local Storage', 'IndexedDB', 'Session Storage', 'SharedStorage', 'Preferences']
+const legacyBrowserStateEntries = new Set(['Local Storage', 'IndexedDB', 'Session Storage', 'SharedStorage', 'Preferences'])
 
-async function copyLegacyBrowserState(source: string, destination: string) {
-  for (const entry of legacyBrowserStateEntries) {
-    const from = join(source, entry)
-    if (!existsSync(from)) continue
-    await cp(from, join(destination, entry), { recursive: true, force: true, errorOnExist: false, filter: (path) => basename(path) !== 'LOCK' })
-  }
-}
-
-async function migrateLegacyUserData(options: { force?: boolean; replaceBrowserStorage?: boolean } = {}) {
+async function migrateLegacyUserData(options: { force?: boolean; browserStorageRestored?: boolean; browserStorageBackupPath?: string } = {}) {
   if (!options.force && existsSync(legacyMigrationMarkerPath())) return
   const legacy = legacyUserDataPaths().find((path) => existsSync(path))
   if (!legacy) return
 
   const destination = app.getPath('userData')
-  const destinationWasFresh = !existsSync(settingsPath())
   await mkdir(destination, { recursive: true })
   // Never replace data created by the Oyama build: this makes the migration
   // safe to retry and preserves any changes made after the rename.
-  await cp(legacy, destination, { recursive: true, force: false, errorOnExist: false, filter: (path) => basename(path) !== 'LOCK' })
-  const browserStorageMigrated = destinationWasFresh || options.replaceBrowserStorage === true
-  if (browserStorageMigrated) await copyLegacyBrowserState(legacy, destination)
-  await writeAtomicFile(legacyMigrationMarkerPath(), `${JSON.stringify({ source: legacy, migratedAt: new Date().toISOString(), browserStorageMigrated }, null, 2)}\n`)
+  // Chromium storage is handled as one directory before session startup.
+  await cp(legacy, destination, { recursive: true, force: false, errorOnExist: false, filter: (path) => basename(path) !== 'LOCK' && !legacyBrowserStateEntries.has(basename(path)) })
+  let browserStorageMigrated = options.browserStorageRestored === true || !existsSync(join(legacy, 'Local Storage'))
+  let browserStorageBackupPath = options.browserStorageBackupPath
+  try {
+    const marker = JSON.parse(await readFile(legacyMigrationMarkerPath(), 'utf8')) as { browserStorageMigrated?: unknown; browserStorageBackupPath?: unknown }
+    browserStorageMigrated ||= marker.browserStorageMigrated === true
+    if (!browserStorageBackupPath && typeof marker.browserStorageBackupPath === 'string') browserStorageBackupPath = marker.browserStorageBackupPath
+  } catch { /* First import has no marker yet. */ }
+  await writeAtomicFile(legacyMigrationMarkerPath(), `${JSON.stringify({ source: legacy, migratedAt: new Date().toISOString(), browserStorageMigrated, browserStorageBackupPath }, null, 2)}\n`)
+}
+
+function isJsonObject(value: string) {
+  try { const parsed: unknown = JSON.parse(value); return !!parsed && typeof parsed === 'object' && !Array.isArray(parsed) }
+  catch { return false }
+}
+
+async function generatePromptCompletion(url: string, model: string, context: string, provider: LlmProvider) {
+  const request = buildPromptCompletionRequest(provider, model, context)
+  if (provider === 'lmstudio') {
+    const data = await llmFetch(url, lmStudioPath(url, request.path), provider, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request.body) }, 20_000) as { choices?: Array<{ message?: { content?: string } }> }
+    return finalOllamaAnswer(data.choices?.[0]?.message?.content ?? '').trim().slice(0, 320)
+  }
+  const data = await llmFetch(url, request.path, provider, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request.body) }, 20_000) as { response?: string }
+  return finalOllamaAnswer(data.response ?? '').trim().slice(0, 320)
 }
 
 async function legacyMigrationStatus() {
@@ -382,7 +374,12 @@ async function legacyMigrationStatus() {
     if (typeof marker.migratedAt === 'string') migratedAt = marker.migratedAt
     browserStorageMigrated = marker.browserStorageMigrated === true
   } catch { /* No completed migration marker yet. */ }
-  return { available: legacyUserDataPaths().some((path) => existsSync(path)), migrated: Boolean(migratedAt), migratedAt, needsBrowserStorageRepair: Boolean(migratedAt) && !browserStorageMigrated }
+  let repairError: string | undefined
+  try {
+    const pending = JSON.parse(await readFile(pendingBrowserStorageMigrationPath(), 'utf8')) as { error?: unknown }
+    if (typeof pending.error === 'string') repairError = pending.error
+  } catch { /* No pending repair or previous failure. */ }
+  return { available: legacyUserDataPaths().some((path) => existsSync(path)), migrated: Boolean(migratedAt), migratedAt, needsBrowserStorageRepair: Boolean(migratedAt) && !browserStorageMigrated, repairError }
 }
 
 async function saveLanToken(token: string) {
@@ -698,11 +695,8 @@ async function handleLanRequest(request: IncomingMessage, response: ServerRespon
         const body = await readJson(request, 10_000)
         const promptId = typeof body.promptId === 'string' ? body.promptId : ''
         if (!promptId) return sendJson(response, 400, { error: 'A prompt ID is required.' })
-        const queue = await comfyFetch(settings.comfyUrl, '/queue') as { queue_running?: unknown[][]; queue_pending?: unknown[][] }
-        const running = (queue.queue_running ?? []).some((item) => item[1] === promptId)
-        if (running) await comfyFetch(settings.comfyUrl, '/interrupt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt_id: promptId }) })
-        else await comfyFetch(settings.comfyUrl, '/queue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ delete: [promptId] }) })
-        return sendJson(response, 200, { cancelled: true })
+        const result = await cancelComfyPrompt(promptId, (path, init) => fetch(`${cleanUrl(settings.comfyUrl)}${path}`, { ...init, signal: AbortSignal.timeout(10_000) }))
+        return sendJson(response, 200, result)
       }
       if (url.pathname.startsWith('/api/lan/history/') && request.method === 'GET') {
         const promptId = decodeURIComponent(url.pathname.slice('/api/lan/history/'.length))
@@ -796,6 +790,85 @@ async function probeClipVideoMetadata(input: string, ffmpegPath: string): Promis
   const declaredFrames = Number(stream.nb_frames)
   const frameCount = Number.isFinite(countedFrames) && countedFrames > 0 ? Math.round(countedFrames) : Number.isFinite(declaredFrames) && declaredFrames > 0 ? Math.round(declaredFrames) : Math.max(1, Math.round(duration * fps))
   return { duration: duration || frameCount / fps, fps, frameCount, width: Number(stream.width) || 0, height: Number(stream.height) || 0 }
+}
+
+let observedComfyOutput: { url: string; directory: string; at: number } | null = null
+
+function comfyOutputFromStats(stats: { system?: { argv?: string[] } }) {
+  const argv = stats.system?.argv ?? []
+  const index = argv.findIndex(value => value === '--output-directory')
+  return (index >= 0 ? argv[index + 1] : argv.find(value => value.startsWith('--output-directory='))?.slice('--output-directory='.length))?.trim() || null
+}
+
+async function trustedComfyOutputDirectory(settings: AppSettings, requested: string) {
+  if (normalize(requested).toLowerCase() === normalize(settings.outputDirectory).toLowerCase()) return true
+  const url = cleanUrl(settings.comfyUrl)
+  if (observedComfyOutput?.url === url && Date.now() - observedComfyOutput.at < 600_000) {
+    return normalize(requested).toLowerCase() === normalize(observedComfyOutput.directory).toLowerCase()
+  }
+  const stats = await comfyFetch(url, '/system_stats', { signal: AbortSignal.timeout(10_000) }).catch(() => null) as { system?: { argv?: string[] } } | null
+  const directory = stats && comfyOutputFromStats(stats)
+  if (!directory) return false
+  observedComfyOutput = { url, directory, at: Date.now() }
+  return normalize(requested).toLowerCase() === normalize(directory).toLowerCase()
+}
+
+async function comfyUploadLimit(url: string) {
+  const features = await comfyFetch(url, '/features', { signal: AbortSignal.timeout(5_000) }).catch(() => null) as { max_upload_size?: unknown } | null
+  const advertised = Number(features?.max_upload_size)
+  return Number.isFinite(advertised) && advertised > 0 ? advertised : 100 * 1024 * 1024
+}
+
+async function fitVideoForComfyUpload(source: string, limit: number, ffmpegPath: string) {
+  const budget = Math.floor(limit - Math.min(1024 * 1024, limit * 0.05))
+  if ((await stat(source)).size <= budget) return { path: source, temporaryDirectory: null as string | null }
+  const metadata = await probeClipVideoMetadata(source, ffmpegPath)
+  const bitrate = Math.floor((budget * 8 / metadata.duration * 0.82 - 160_000) / 1000)
+  if (bitrate < 250) throw new Error('This video is too long for ComfyUI’s upload limit. Use a shorter source or raise ComfyUI’s --max-upload-size setting.')
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), 'oyama-comfy-upload-'))
+  const output = join(temporaryDirectory, `source-${randomUUID()}-24fps.mp4`)
+  try {
+    for (const factor of [1, 0.7, 0.5]) {
+      const rate = Math.max(250, Math.floor(bitrate * factor))
+      await runFfmpeg(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-i', source,
+        '-map', '0:v:0', '-map', '0:a:0?', '-vf', 'fps=24,pad=ceil(iw/2)*2:ceil(ih/2)*2',
+        '-c:v', 'libx264', '-preset', 'fast', '-b:v', `${rate}k`, '-maxrate', `${rate}k`, '-bufsize', `${rate * 2}k`, '-pix_fmt', 'yuv420p', '-r', '24', '-fps_mode', 'cfr',
+        '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', '-y', output])
+      if ((await stat(output)).size <= budget) {
+        const prepared = await probeClipVideoMetadata(output, ffmpegPath)
+        if (Math.abs(metadata.fps - 24) < 0.01 && prepared.frameCount !== metadata.frameCount) throw new Error(`Upload conversion changed the source from ${metadata.frameCount} to ${prepared.frameCount} frames.`)
+        if (prepared.width !== Math.ceil(metadata.width / 2) * 2 || prepared.height !== Math.ceil(metadata.height / 2) * 2) throw new Error('Upload conversion changed the video resolution.')
+        return { path: output, temporaryDirectory }
+      }
+    }
+    throw new Error('FFmpeg could not fit this video under ComfyUI’s upload limit. Use a shorter source or raise --max-upload-size.')
+  } catch (error) {
+    await unlink(output).catch(() => undefined)
+    await rmdir(temporaryDirectory).catch(() => undefined)
+    throw error
+  }
+}
+
+async function uploadFileToComfy(url: string, source: string, subfolder: string, limit: number) {
+  const name = basename(source).replace(/["\r\n\\]/g, '_')
+  const safeSubfolder = subfolder.replace(/[\r\n]/g, '')
+  const boundary = `oyama-${randomUUID()}`
+  const prefix = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="${name}"\r\nContent-Type: application/octet-stream\r\n\r\n`)
+  const suffix = Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="type"\r\n\r\ninput\r\n--${boundary}\r\nContent-Disposition: form-data; name="subfolder"\r\n\r\n${safeSubfolder}\r\n--${boundary}\r\nContent-Disposition: form-data; name="overwrite"\r\n\r\ntrue\r\n--${boundary}--\r\n`)
+  const length = (await stat(source)).size + prefix.length + suffix.length
+  if (length > limit) throw new Error('This file exceeds ComfyUI’s upload limit. Use a smaller source or raise ComfyUI’s --max-upload-size setting.')
+  const body = Readable.from((async function* () {
+    yield prefix
+    for await (const chunk of createReadStream(source)) yield chunk
+    yield suffix
+  })())
+  return comfyFetch(url, '/upload/image', {
+    method: 'POST',
+    headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': String(length) },
+    body: Readable.toWeb(body) as unknown as BodyInit,
+    duplex: 'half',
+    signal: AbortSignal.timeout(300_000),
+  } as RequestInit & { duplex: 'half' })
 }
 
 function clipMasterSlug(value: string) {
@@ -945,6 +1018,24 @@ function createWindow() {
   else void window.loadFile(join(__dirname, '..', 'dist', 'index.html'))
 }
 
+// The repair must run before Chromium initializes its LevelDB session. A failed
+// swap leaves the pending marker and the original storage in place.
+const repairRequestedAtLaunch = existsSync(pendingBrowserStorageMigrationPath())
+const legacyProfileAtLaunch = legacyUserDataPaths().find((path) => existsSync(path))
+const initialLegacyImport = !existsSync(legacyMigrationMarkerPath()) && !existsSync(settingsPath())
+let browserStorageRestoredAtLaunch = false
+let browserStorageBackupPathAtLaunch: string | undefined
+let browserStorageRestoreError: string | undefined
+if (!existsSync(factoryResetMarkerPath()) && legacyProfileAtLaunch && (repairRequestedAtLaunch || initialLegacyImport)) {
+  try {
+    const restored = restoreLegacyLocalStorage(legacyProfileAtLaunch, app.getPath('userData'))
+    browserStorageRestoredAtLaunch = true
+    browserStorageBackupPathAtLaunch = restored.backupPath
+  } catch (error) {
+    browserStorageRestoreError = error instanceof Error ? error.message : String(error)
+  }
+}
+
 app.whenReady().then(async () => {
   if (existsSync(factoryResetMarkerPath())) {
     await session.defaultSession.clearStorageData()
@@ -955,20 +1046,38 @@ app.whenReady().then(async () => {
     await unlink(factoryResetMarkerPath())
   }
   const repairBrowserStorage = existsSync(pendingBrowserStorageMigrationPath())
-  await migrateLegacyUserData({ force: repairBrowserStorage, replaceBrowserStorage: repairBrowserStorage })
-  if (repairBrowserStorage) await unlink(pendingBrowserStorageMigrationPath()).catch(() => undefined)
+  try {
+    if (browserStorageRestoreError) throw new Error(browserStorageRestoreError)
+    await migrateLegacyUserData({ force: repairBrowserStorage, browserStorageRestored: browserStorageRestoredAtLaunch, browserStorageBackupPath: browserStorageBackupPathAtLaunch })
+    if (repairBrowserStorage) await unlink(pendingBrowserStorageMigrationPath())
+  } catch (error) {
+    // A locked profile must never turn a recoverable import into a startup crash.
+    const message = error instanceof Error ? error.message : String(error)
+    await writeAtomicFile(pendingBrowserStorageMigrationPath(), `${JSON.stringify({ requestedAt: new Date().toISOString(), error: message })}\n`).catch(() => undefined)
+  }
   await startLanServer()
   protocol.handle('minimax-media', async (request) => {
     const requestUrl = new URL(request.url)
     if (requestUrl.hostname === 'comfy') {
       const target = requestUrl.searchParams.get('url')
       if (!target) return new Response('Missing ComfyUI media URL', { status: 400 })
-      const configuredUrl = new URL(cleanUrl((await loadSettings()).comfyUrl))
+      const settings = await loadSettings()
+      const configuredUrl = new URL(cleanUrl(settings.comfyUrl))
       const targetUrl = new URL(target)
       if (targetUrl.origin !== configuredUrl.origin || targetUrl.pathname !== '/view') {
         return new Response('Media URL is outside the configured ComfyUI server', { status: 403 })
       }
-      const upstream = await net.fetch(targetUrl.toString(), { headers: request.headers })
+      const outputFile = {
+        filename: targetUrl.searchParams.get('filename'),
+        subfolder: targetUrl.searchParams.get('subfolder') ?? '',
+        type: targetUrl.searchParams.get('type') ?? 'output',
+      }
+      const local = resolveComfyOutput(settings.outputDirectory, outputFile)
+        ?? (observedComfyOutput?.url === cleanUrl(settings.comfyUrl) ? resolveComfyOutput(observedComfyOutput.directory, outputFile) : null)
+      if (local && selectedMediaExtensions.has(extname(local).toLowerCase())) return localMediaResponse(local, request)
+      let upstream: Response
+      try { upstream = await net.fetch(targetUrl.toString(), { headers: request.headers }) }
+      catch { return new Response('ComfyUI is unavailable and this media is not in the configured output folder.', { status: 503 }) }
       const headers = new Headers(upstream.headers)
       headers.delete('content-security-policy')
       headers.delete('content-disposition')
@@ -1001,10 +1110,11 @@ app.whenReady().then(async () => {
     if (replaceBrowserStorage === true) {
       await writeAtomicFile(pendingBrowserStorageMigrationPath(), `${JSON.stringify({ requestedAt: new Date().toISOString() })}\n`)
       app.relaunch()
-      app.exit(0)
+      // Quit gracefully so Chromium releases the destination LevelDB lock.
+      app.quit()
       return { available: true, migrated: false, needsBrowserStorageRepair: false }
     }
-    await migrateLegacyUserData({ force: true, replaceBrowserStorage: replaceBrowserStorage === true })
+    await migrateLegacyUserData({ force: true })
     return legacyMigrationStatus()
   })
   ipcMain.handle('system:gpu-telemetry', () => readGpuTelemetry())
@@ -1137,9 +1247,9 @@ app.whenReady().then(async () => {
     const started = Date.now()
     try {
       const stats = await comfyFetch(url, '/system_stats', { signal: AbortSignal.timeout(15_000) }) as { system?: { argv?: string[] } }
-      const argv = stats.system?.argv ?? []
-      const outputIndex = argv.findIndex(value => value === '--output-directory')
-      const detectedOutputDirectory = outputIndex >= 0 ? argv[outputIndex + 1] : argv.find(value => value.startsWith('--output-directory='))?.slice('--output-directory='.length)
+      const detectedOutputDirectory = comfyOutputFromStats(stats)
+      const settings = await loadSettings()
+      if (cleanUrl(url) === cleanUrl(settings.comfyUrl)) observedComfyOutput = detectedOutputDirectory ? { url: cleanUrl(url), directory: detectedOutputDirectory, at: Date.now() } : null
       return { connected: true, latencyMs: Date.now() - started, stats, detectedOutputDirectory }
     } catch (error) {
       return { connected: false, latencyMs: Date.now() - started, error: error instanceof Error ? error.message : String(error) }
@@ -1178,20 +1288,33 @@ app.whenReady().then(async () => {
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(mime)) throw new Error('ComfyUI did not return a supported image.')
     return `data:${mime};base64,${Buffer.from(await response.arrayBuffer()).toString('base64')}`
   })
-  ipcMain.handle('comfy:save-output-image', async (_event, url: string, file: { filename: string; subfolder?: string; type?: string }, requestedOutput: string) => {
+  ipcMain.handle('comfy:save-output-image', async (_event, url: string, file: { filename: string; subfolder?: string; type?: string }, requestedOutput: string, purpose: 'character' | 'photo-edit' | 'image-creation' = 'character') => {
     const settings = await loadSettings()
     const outputDirectory = normalize(requestedOutput)
-    if (outputDirectory.toLowerCase() !== normalize(settings.outputDirectory).toLowerCase()) throw new Error('Character images must be saved inside the configured output folder.')
-    const query = new URLSearchParams({ filename: basename(file.filename), subfolder: file.subfolder ?? '', type: file.type ?? 'output' })
-    const response = await fetch(`${cleanUrl(url)}/view?${query}`)
-    if (!response.ok) throw new Error(`Character image download failed (${response.status}).`)
-    const mime = response.headers.get('content-type')?.split(';')[0] ?? ''
-    const extension = mime === 'image/jpeg' ? '.jpg' : mime === 'image/webp' ? '.webp' : mime === 'image/png' ? '.png' : ''
-    if (!extension) throw new Error('ComfyUI did not return a supported character image.')
-    const directory = join(outputDirectory, 'MiniMax Character References')
+    if (outputDirectory.toLowerCase() !== normalize(settings.outputDirectory).toLowerCase()) throw new Error('Images must be saved inside the configured output folder.')
+    const folders = { character: 'MiniMax Character References', 'photo-edit': 'FireRed Photo Edits', 'image-creation': 'Created Images' }
+    if (!Object.hasOwn(folders, purpose)) throw new Error('Unknown image output purpose.')
+    const local = resolveComfyOutput(outputDirectory, file)
+    const localExtension = local ? extname(local).toLowerCase() : ''
+    let imageBytes: Buffer | null = null
+    let extension = ''
+    if (local && ['.png', '.jpg', '.jpeg', '.webp'].includes(localExtension)) {
+      imageBytes = await readFile(local)
+      extension = localExtension
+    } else {
+      const query = new URLSearchParams({ filename: basename(file.filename), subfolder: file.subfolder ?? '', type: file.type ?? 'output' })
+      const response = await fetch(`${cleanUrl(url)}/view?${query}`)
+      if (!response.ok) throw new Error(`Image download failed (${response.status}).`)
+      const mime = response.headers.get('content-type')?.split(';')[0] ?? ''
+      extension = mime === 'image/jpeg' ? '.jpg' : mime === 'image/webp' ? '.webp' : mime === 'image/png' ? '.png' : ''
+      if (!extension) throw new Error('ComfyUI did not return a supported image.')
+      imageBytes = Buffer.from(await response.arrayBuffer())
+    }
+    const directory = join(outputDirectory, folders[purpose])
     await mkdir(directory, { recursive: true })
-    const target = join(directory, `character-${Date.now()}-${randomUUID().slice(0, 8)}${extension}`)
-    await writeFile(target, Buffer.from(await response.arrayBuffer()))
+    const prefix = purpose === 'character' ? 'character' : purpose === 'photo-edit' ? 'photo-edit' : 'created-image'
+    const target = join(directory, `${prefix}-${Date.now()}-${randomUUID().slice(0, 8)}${extension}`)
+    await writeFile(target, imageBytes)
     return { path: target, name: basename(target) }
   })
   ipcMain.handle('comfy:save-still-image', async (_event, url: string, file: { filename: string; subfolder?: string; type?: string }, requestedOutput: string) => {
@@ -1212,28 +1335,8 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('comfy:history', (_event, url: string, promptId: string) => comfyFetch(url, `/history/${encodeURIComponent(promptId)}`, { signal: AbortSignal.timeout(10_000) }))
   ipcMain.handle('comfy:cancel', async (_event, url: string, promptId: string) => {
-    if (!promptId || typeof promptId !== 'string') throw new Error('A ComfyUI prompt ID is required to cancel a generation.')
-    const queue = await comfyFetch(url, '/queue') as { queue_running?: unknown[][]; queue_pending?: unknown[][] }
-    const running = (queue.queue_running ?? []).some((item) => item[1] === promptId)
-    const pending = (queue.queue_pending ?? []).some((item) => item[1] === promptId)
-    if (running) {
-      await comfyFetch(url, '/interrupt', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt_id: promptId }),
-      })
-      return { cancelled: true, state: 'running' as const }
-    }
-    if (pending) {
-      await comfyFetch(url, '/queue', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ delete: [promptId] }),
-      })
-      return { cancelled: true, state: 'pending' as const }
-    }
-    const history = await comfyFetch(url, `/history/${encodeURIComponent(promptId)}`) as Record<string, unknown>
-    return { cancelled: false, state: promptId in history ? 'finished' as const : 'unknown' as const }
+    if (typeof promptId !== 'string') throw new Error('A ComfyUI prompt ID is required to cancel a generation.')
+    return cancelComfyPrompt(promptId, (path, init) => fetch(`${cleanUrl(url)}${path}`, { ...init, signal: AbortSignal.timeout(10_000) }))
   })
   ipcMain.handle('outputs:trash', async (_event, source: string, mode: 'trash' | 'permanent' = 'trash') => {
     if (typeof source !== 'string' || !source) throw new Error('An output file is required.')
@@ -1245,7 +1348,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('outputs:resolve', async (_event, outputDirectory: string, file: { filename?: unknown; subfolder?: unknown; type?: unknown }) => {
     const settings = await loadSettings()
-    if (normalize(outputDirectory).toLowerCase() !== normalize(settings.outputDirectory).toLowerCase()) return null
+    if (!await trustedComfyOutputDirectory(settings, outputDirectory)) return null
     // DesktopApi.resolveOutput promises a filesystem path. Callers persist this
     // value for frame extraction and create a media URL separately. Returning a
     // minimax-media URL here caused that URL to be treated as a path and made
@@ -1258,24 +1361,108 @@ app.whenReady().then(async () => {
     // extraction so continuation can reuse a video that already previews.
     const source = await resolveUploadSource(filePath)
     const temporarySource = filePath.startsWith('minimax-media:') && new URL(filePath).hostname === 'comfy'
+    let converted: { path: string; temporaryDirectory: string | null } | null = null
     try {
-      const bytes = await readFile(source)
-      const form = new FormData()
-      form.append('image', new Blob([bytes]), basename(source))
-      form.append('type', 'input')
-      form.append('subfolder', subfolder)
-      form.append('overwrite', 'true')
-      try { return await comfyFetch(url, '/upload/image', { method: 'POST', body: form, signal: AbortSignal.timeout(90_000) }) }
+      const limit = await comfyUploadLimit(url)
+      const fileSize = (await stat(source)).size
+      if (mediaExtensions.has(extname(source).toLowerCase()) && fileSize > limit - Math.min(1024 * 1024, limit * 0.05)) {
+        converted = await fitVideoForComfyUpload(source, limit, (await loadSettings()).ffmpegPath)
+      }
+      try { return await uploadFileToComfy(url, converted?.path ?? source, subfolder, limit) }
       catch (error) {
-        if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) throw new Error(`ComfyUI did not finish uploading ${basename(source)} within 90 seconds. Check that ComfyUI is responsive, then retry this beat.`)
+        if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) throw new Error(`ComfyUI did not finish uploading ${basename(source)} within five minutes. Check that ComfyUI is responsive, then retry.`)
+        if (error instanceof Error && /Maximum request body size|ComfyUI returned 413|Upload exceeds server limit/i.test(error.message)) throw new Error('ComfyUI rejected this upload at its size limit. Use a shorter source or raise ComfyUI’s --max-upload-size setting, then retry.')
         throw error
       }
     } finally {
+      if (converted?.temporaryDirectory) {
+        await unlink(converted.path).catch(() => undefined)
+        await rmdir(converted.temporaryDirectory).catch(() => undefined)
+      }
       if (temporarySource) await unlink(source).catch(() => undefined)
     }
   })
   ipcMain.handle('ollama:status', async (_event, url: string, provider: LlmProvider = 'ollama') => ({ connected: true, models: await listLlmModels(url, provider) }))
-  ipcMain.handle('ollama:generate', async (_event, url: string, model: string, prompt: string, provider: LlmProvider = 'ollama') => generateWithLlm(url, model, prompt, provider))
+  ipcMain.handle('ollama:generate', async (event, url: string, model: string, prompt: string, provider: LlmProvider = 'ollama', requestId?: string) => generateWithLlm(url, model, prompt, provider, requestId ? (update) => event.sender.send('llm:stream-update', requestId, update) : undefined))
+  ipcMain.handle('llm:prompt-completion', async (_event, url: string, model: string, context: string, provider: LlmProvider = 'ollama') => {
+    if (!model || typeof context !== 'string' || context.length > 50_000) throw new Error('Choose a local model and enter a shorter scene direction.')
+    return generatePromptCompletion(url, model, context, provider)
+  })
+  ipcMain.handle('video:ripple-chunk-source', async (_event, source: string, startFrame: number, sourceFrames: number, outputDirectory: string, ffmpegPath: string) => {
+    if (!Number.isInteger(startFrame) || startFrame < 0 || !Number.isInteger(sourceFrames) || sourceFrames < 48 || sourceFrames > 480 || sourceFrames % 8 !== 0) throw new Error('Choose a valid Ripple chunk range.')
+    const input = await resolveVideoSource(source)
+    const temporaryInput = source.startsWith('minimax-media:') && new URL(source).hostname === 'comfy'
+    try {
+      const metadata = await probeClipVideoMetadata(input, ffmpegPath)
+      if (startFrame / 24 >= metadata.duration) throw new Error('The Ripple chunk starts beyond the source clip.')
+      const folder = join(outputDirectory, 'LTX_Ripple', '_chunks')
+      await mkdir(folder, { recursive: true })
+      const output = join(folder, `source-${randomUUID()}.mp4`)
+      const audioStreams = JSON.parse(await runFfprobe(ffmpegPath, ['-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=index', '-of', 'json', input])) as { streams?: unknown[] }
+      const hasAudio = Boolean(audioStreams.streams?.length)
+      const duration = sourceFrames / 24
+      await runFfmpeg(ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-i', input,
+        ...(!hasAudio ? ['-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo'] : []),
+        '-map', '0:v:0', '-map', hasAudio ? '0:a:0' : '1:a:0',
+        '-vf', `fps=24,trim=start_frame=${startFrame}:end_frame=${startFrame + sourceFrames},tpad=stop_mode=clone:stop_duration=3,trim=end_frame=${sourceFrames},setpts=PTS-STARTPTS,pad=ceil(iw/2)*2:ceil(ih/2)*2`,
+        '-af', `atrim=start=${startFrame / 24}:duration=${duration},asetpts=PTS-STARTPTS,apad,atrim=duration=${duration}`,
+        '-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p', '-r', '24', '-fps_mode', 'cfr',
+        '-c:a', 'aac', '-movflags', '+faststart', '-n', output,
+      ]).catch(async error => { await unlink(output).catch(() => undefined); throw error })
+      const prepared = await probeClipVideoMetadata(output, ffmpegPath)
+      if (prepared.frameCount !== sourceFrames) { await unlink(output).catch(() => undefined); throw new Error(`Ripple chunk has ${prepared.frameCount} frames instead of ${sourceFrames}. Check FFmpeg settings.`) }
+      return output
+    } finally { if (temporaryInput) await unlink(input).catch(() => undefined) }
+  })
+  ipcMain.handle('video:ripple-assemble', async (_event, clips: Array<{ source: string; sourceFrames: number; overlapFrames: number }>, originalSource: string, duration: number, width: number, height: number, blend: boolean, outputDirectory: string, ffmpegPath: string) => {
+    if (!Array.isArray(clips) || clips.length < 2 || clips.length > 100 || !Number.isFinite(duration) || duration < 2 || duration > 300 || !Number.isInteger(width) || !Number.isInteger(height) || width < 256 || height < 256 || width > 2048 || height > 2048 || width % 32 || height % 32) throw new Error('Choose valid Ripple segments and output dimensions.')
+    if (clips.some((clip, index) => !clip || typeof clip.source !== 'string' || !Number.isInteger(clip.sourceFrames) || clip.sourceFrames < 48 || clip.sourceFrames > 480 || clip.sourceFrames % 8 || !Number.isInteger(clip.overlapFrames) || clip.overlapFrames < 0 || clip.overlapFrames > 48 || (index === 0 ? clip.overlapFrames !== 0 : clip.overlapFrames >= clip.sourceFrames / 2))) throw new Error('Ripple segments have invalid lengths or overlaps.')
+    const inputs: string[] = []
+    const temporary: string[] = []
+    try {
+      for (const clip of clips) {
+        const resolved = await resolveVideoSource(clip.source)
+        inputs.push(resolved)
+        if (clip.source.startsWith('minimax-media:') && new URL(clip.source).hostname === 'comfy') temporary.push(resolved)
+      }
+      const sourceInput = await resolveVideoSource(originalSource)
+      inputs.push(sourceInput)
+      if (originalSource.startsWith('minimax-media:') && new URL(originalSource).hostname === 'comfy') temporary.push(sourceInput)
+      const filters: string[] = []
+      let timeline = 0
+      for (let index = 0; index < clips.length; index += 1) {
+        const clip = clips[index]
+        const clipDuration = clip.sourceFrames / 24
+        const trim = !blend && index > 0 ? `trim=start=${clip.overlapFrames / 24}:duration=${clipDuration - clip.overlapFrames / 24}` : `trim=duration=${clipDuration}`
+        // xfade needs a declared constant frame rate after trim and setpts;
+        // placing fps earlier leaves FFmpeg reporting 1/0 and no output frames.
+        filters.push(`[${index}:v]scale=${width}:${height}:flags=lanczos,format=yuv420p,${trim},setpts=PTS-STARTPTS,fps=24[v${index}]`)
+        if (index === 0) timeline = clipDuration
+      }
+      let combined = 'v0'
+      if (blend) {
+        for (let index = 1; index < clips.length; index += 1) {
+          const overlap = clips[index].overlapFrames / 24
+          const next = `x${index}`
+          filters.push(`[${combined}][v${index}]xfade=transition=fade:duration=${overlap}:offset=${(timeline - overlap).toFixed(6)}[${next}]`)
+          combined = next
+          timeline += clips[index].sourceFrames / 24 - overlap
+        }
+      } else {
+        filters.push(`${clips.map((_, index) => `[v${index}]`).join('')}concat=n=${clips.length}:v=1:a=0[joined]`)
+        combined = 'joined'
+      }
+      filters.push(`[${combined}]trim=duration=${duration},setpts=PTS-STARTPTS[vout]`)
+      const folder = join(outputDirectory, 'LTX_Ripple')
+      await mkdir(folder, { recursive: true })
+      const name = `Ripple_Long_${randomUUID()}.mp4`
+      const output = join(folder, name)
+      await runFfmpeg(ffmpegPath, ['-hide_banner', '-loglevel', 'error', ...inputs.flatMap(input => ['-i', input]), '-filter_complex', filters.join(';'), '-map', '[vout]', '-map', `${clips.length}:a:0?`, '-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-pix_fmt', 'yuv420p', '-r', '24', '-c:a', 'aac', '-b:a', '192k', '-t', String(duration), '-movflags', '+faststart', '-n', output]).catch(async error => { await unlink(output).catch(() => undefined); throw error })
+      const result = await stat(output)
+      if (!result.size) throw new Error('Ripple assembly produced an empty video.')
+      return { path: output, name }
+    } finally { await Promise.all(temporary.map(path => unlink(path).catch(() => undefined))) }
+  })
   ipcMain.handle('ollama:vision', async (_event, url: string, model: string, prompt: string, imagePaths: string[], provider: LlmProvider = 'ollama') => {
     const allowedImages = new Set(['.png', '.jpg', '.jpeg', '.webp'])
     const validPaths = [...new Set(imagePaths)].filter((filePath) => existsSync(filePath) && allowedImages.has(extname(filePath).toLowerCase())).slice(0, 6)
@@ -1297,7 +1484,7 @@ app.whenReady().then(async () => {
     if (!answer) throw new Error(typeof error === 'string' ? error : error?.message || `${provider === 'lmstudio' ? 'LM Studio' : 'Ollama'} could not inspect the supplied reference images. Choose a local vision-capable model in Settings.`)
     return answer
   })
-  ipcMain.handle('ollama:structured', async (_event, url: string, model: string, prompt: string, schema: Record<string, unknown>, provider: LlmProvider = 'ollama', imagePaths: string[] = []) => {
+  ipcMain.handle('ollama:structured', async (event, url: string, model: string, prompt: string, schema: Record<string, unknown>, provider: LlmProvider = 'ollama', imagePaths: string[] = [], requestId?: string) => {
     const allowedImages = new Set(['.png', '.jpg', '.jpeg', '.webp'])
     const requestedPaths = imagePaths.slice(0, 6)
     const images: Array<{ base64: string; mime: string }> = []
@@ -1313,20 +1500,26 @@ app.whenReady().then(async () => {
       const mime = extension === '.png' ? 'image/png' : extension === '.webp' ? 'image/webp' : 'image/jpeg'
       images.push({ base64: bytes.toString('base64'), mime })
     }
-    const data = await llmFetch(url, provider === 'lmstudio' ? lmStudioPath(url, '/chat/completions') : '/api/chat', provider, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(provider === 'lmstudio' ? { model, messages: [{ role: 'user', content: images.length ? [{ type: 'text', text: prompt }, ...images.map((image) => ({ type: 'image_url', image_url: { url: `data:${image.mime};base64,${image.base64}` } }))] : prompt }], stream: false, response_format: { type: 'json_schema', json_schema: { name: 'oyama_ai_video_studio_response', strict: true, schema } }, temperature: 0.2, max_tokens: 6000 } : {
+    const path = provider === 'lmstudio' ? lmStudioPath(url, '/chat/completions') : '/api/chat'
+    const payload = provider === 'lmstudio' ? { model, messages: [{ role: 'user', content: images.length ? [{ type: 'text', text: prompt }, ...images.map((image) => ({ type: 'image_url', image_url: { url: `data:${image.mime};base64,${image.base64}` } }))] : prompt }], stream: Boolean(requestId), response_format: { type: 'json_schema', json_schema: { name: 'oyama_ai_video_studio_response', strict: true, schema } }, temperature: 0.2, max_tokens: requestId ? 1024 : 6000, ...(requestId ? { reasoning_effort: 'low' } : {}) } : {
         model,
         messages: [{ role: 'user', content: prompt, ...(images.length ? { images: images.map((image) => image.base64) } : {}) }],
-        stream: false,
+        stream: Boolean(requestId),
         keep_alive: 0,
-        think: false,
+        ...(!requestId ? { think: false } : {}),
         format: schema,
         options: { temperature: 0.2, num_predict: 6000 },
-      }),
-    }) as { message?: { content?: string }; choices?: Array<{ message?: { content?: string } }>; error?: string | { message?: string } }
-    const content = finalOllamaAnswer(provider === 'lmstudio' ? data.choices?.[0]?.message?.content ?? '' : data.message?.content ?? '')
+      }
+    const request = (body: unknown, onStream?: (update: LlmStreamUpdate) => void) => llmFetch(url, path, provider, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, 600_000, onStream) as Promise<{ message?: { content?: string }; choices?: Array<{ message?: { content?: string } }>; error?: string | { message?: string } }>
+    let data = await request(payload, requestId ? (update) => event.sender.send('llm:stream-update', requestId, update) : undefined)
+    let content = finalOllamaAnswer(provider === 'lmstudio' ? data.choices?.[0]?.message?.content ?? '' : data.message?.content ?? '')
+    // Reasoning models may exhaust a short live stream before producing JSON.
+    // Retry the same grounded request without reasoning instead of losing the draft.
+    if (requestId && !isJsonObject(content)) {
+      const fallback = provider === 'lmstudio' ? { ...payload, stream: false, reasoning_effort: 'none', max_tokens: 6000 } : { ...payload, stream: false, think: false }
+      data = await request(fallback)
+      content = finalOllamaAnswer(provider === 'lmstudio' ? data.choices?.[0]?.message?.content ?? '' : data.message?.content ?? '')
+    }
     if (!content) throw new Error(typeof data.error === 'string' ? data.error : data.error?.message || `${provider === 'lmstudio' ? 'LM Studio' : 'Ollama'} returned an empty structured response.`)
     try { return JSON.parse(content) }
     catch { throw new Error(`${provider === 'lmstudio' ? 'LM Studio' : 'Ollama'} returned a response that was not valid JSON.`) }

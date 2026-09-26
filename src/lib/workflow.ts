@@ -136,7 +136,7 @@ export function buildMiniMaxWorkflow(
     }
     modelLink = ['6', 0]
   }
-  if (options.previewOverride) {
+  if (options.livePreview !== false && options.previewOverride) {
     prompt['7'] = {
       class_type: options.previewOverride.nodeType ?? 'MiniMaxH3PreviewOverride',
       inputs: {
@@ -251,19 +251,20 @@ export function buildMiniMaxWorkflow(
   }
   prompt['19'] = {
     class_type: 'SaveVideo',
-    inputs: { video: ['18', 0], filename_prefix: options.filenamePrefix, format: 'auto', codec: 'auto' },
+    inputs: { video: ['18', 0], filename_prefix: options.filenamePrefix, format: 'auto', 'format.codec': 'auto' },
   }
-  // Always publish one standard ComfyUI preview frame. This works even when the
-  // server was launched without latent preview decoding enabled.
-  prompt['71'] = { class_type: 'ImageFromBatch', inputs: { image: ['16', 0], batch_index: 0, length: 1 } }
-  prompt['72'] = { class_type: 'PreviewImage', inputs: { images: ['71', 0] } }
+  // The final output remains available when preview work is disabled.
+  if (options.livePreview !== false) {
+    prompt['71'] = { class_type: 'ImageFromBatch', inputs: { image: ['16', 0], batch_index: 0, length: 1 } }
+    prompt['72'] = { class_type: 'PreviewImage', inputs: { images: ['71', 0] } }
+  }
   if (options.upscale?.type === 'refine') {
     const { steps, denoise } = options.upscale
     if (!Number.isInteger(steps) || steps < 1 || steps > 30 || !Number.isFinite(denoise) || denoise <= 0 || denoise > 1) throw new Error('H3 refinement requires 1–30 steps and a denoise strength above 0 and at most 1.')
     prompt['110'] = { class_type: 'BasicScheduler', inputs: { model: modelLink, scheduler, steps, denoise } }
     prompt['111'] = { class_type: 'SamplerCustomAdvanced', inputs: { noise: ['11', 0], guider: ['12', 0], sampler: ['13', 0], sigmas: ['110', 0], latent_image: ['15', 0] } }
     prompt['16'] = { class_type: 'VAEDecode', inputs: { samples: ['111', 0], vae: videoVaeLink } }
-    prompt['19'] = { class_type: 'SaveVideo', inputs: { video: ['18', 0], filename_prefix: `${options.filenamePrefix}_H3_Refine`, format: 'auto', codec: 'auto' } }
+    prompt['19'] = { class_type: 'SaveVideo', inputs: { video: ['18', 0], filename_prefix: `${options.filenamePrefix}_H3_Refine`, format: 'auto', 'format.codec': 'auto' } }
   } else if (options.upscale?.type === 'h3') {
     // H3 Latent Upscale Pro keeps pass one in H3's joint AV latent domain,
     // applies the learned 3D video upscale, then performs a real low-sigma H3
@@ -284,12 +285,17 @@ export function buildMiniMaxWorkflow(
         device: 'cuda', precision: 'fp16', offload_after_upscale: true,
       },
     }
-    // Nodes 16/71 remain a first-pass preview branch. Final AV is decoded from
-    // the refined joint latent only once at target resolution.
+    // The final decode also supplies the preview. A separate first-pass output
+    // would force a second full H3 VAE decode and audio decode for this graph.
     prompt['113'] = { class_type: 'VAEDecode', inputs: { samples: ['111', 0], vae: videoVaeLink } }
     prompt['114'] = { class_type: 'VAEDecodeAudio', inputs: { samples: ['111', 0], vae: audioVaeLink } }
     prompt['18'] = { class_type: 'CreateVideo', inputs: { images: ['113', 0], audio: ['114', 0], fps: 24, bit_depth: 8, color_space: 'sRGB' } }
-    prompt['19'] = { class_type: 'SaveVideo', inputs: { video: ['18', 0], filename_prefix: `${options.filenamePrefix}_H3_Latent_Pro_2x`, format: 'auto', codec: 'auto' } }
+    prompt['19'] = { class_type: 'SaveVideo', inputs: { video: ['18', 0], filename_prefix: `${options.filenamePrefix}_H3_Latent_Pro_2x`, format: 'auto', 'format.codec': 'auto' } }
+    if (!options.continuationAssembly) {
+      delete prompt['16']
+      delete prompt['17']
+      if (options.livePreview !== false) prompt['71'].inputs.image = ['113', 0]
+    }
   } else if (options.upscale?.type === 'ltx') {
     // MiniMax post-processing intentionally remains non-generative: encode the
     // completed H3 frame sequence into the LTX video latent domain, apply the
@@ -312,7 +318,7 @@ export function buildMiniMaxWorkflow(
     prompt['67'] = { class_type: 'VAEDecodeTiled', inputs: { samples: ['66', 0], vae: ['63', 0], tile_size: 512, overlap: 64, temporal_size: 64, temporal_overlap: 8 } }
     prompt['68'] = { class_type: 'ImageFromBatch', inputs: { image: ['67', 0], batch_index: 0, length: frames } }
     prompt['69'] = { class_type: 'CreateVideo', inputs: { images: ['68', 0], audio: ['17', 0], fps: 24, bit_depth: 8, color_space: 'sRGB' } }
-    prompt['70'] = { class_type: 'SaveVideo', inputs: { video: ['69', 0], filename_prefix: `${options.filenamePrefix}_LTX25_2x`, format: 'auto', codec: 'auto' } }
+    prompt['70'] = { class_type: 'SaveVideo', inputs: { video: ['69', 0], filename_prefix: `${options.filenamePrefix}_LTX25_2x`, format: 'auto', 'format.codec': 'auto' } }
   } else if (options.upscale?.type === 'rtx') {
     // Frame-based AI upscaling runs through ComfyUI's CUDA/PyTorch device. It is
     // independent of LTX and is normalized to an exact 2x output even when the
@@ -321,7 +327,7 @@ export function buildMiniMaxWorkflow(
     prompt['81'] = { class_type: 'ImageUpscaleWithModel', inputs: { upscale_model: ['80', 0], image: ['16', 0] } }
     prompt['82'] = { class_type: 'ImageScale', inputs: { image: ['81', 0], upscale_method: 'lanczos', width: options.width * 2, height: options.height * 2, crop: 'disabled' } }
     prompt['83'] = { class_type: 'CreateVideo', inputs: { images: ['82', 0], audio: ['17', 0], fps: 24, bit_depth: 8, color_space: 'sRGB' } }
-    prompt['84'] = { class_type: 'SaveVideo', inputs: { video: ['83', 0], filename_prefix: `${options.filenamePrefix}_RTX_AI_2x`, format: 'auto', codec: 'auto' } }
+    prompt['84'] = { class_type: 'SaveVideo', inputs: { video: ['83', 0], filename_prefix: `${options.filenamePrefix}_RTX_AI_2x`, format: 'auto', 'format.codec': 'auto' } }
   }
   if (options.continuationAssembly) {
     if (!uploads.source) throw new Error('Continuation assembly requires the completed source video upload.')
@@ -331,8 +337,8 @@ export function buildMiniMaxWorkflow(
       : options.continuationAssembly.trimFrames
     prompt['171'] = { class_type: 'MiniMaxH3LoopTrim', inputs: { images: ['16', 0], audio: ['17', 0], trim_frames: trimFrames, fps: 24, match_tail: true } }
     prompt['173'] = { class_type: 'CreateVideo', inputs: { images: ['171', 0], audio: ['171', 1], fps: 24, bit_depth: 8, color_space: 'sRGB' } }
-    prompt['174'] = { class_type: 'SaveVideo', inputs: { video: ['173', 0], filename_prefix: `${options.filenamePrefix}_Beat`, format: 'auto', codec: 'auto' } }
-    prompt['172'] = { class_type: 'MiniMaxH3VideoMerge', inputs: { images_a: previousFrames, audio_a: ['1701', 1], images_b: ['171', 0], audio_b: ['171', 1], seam_smooth: 1, color_match: 'seam_fade', blend_frames: options.continuationAssembly.blendFrames, fps: 24 } }
+    prompt['174'] = { class_type: 'SaveVideo', inputs: { video: ['173', 0], filename_prefix: `${options.filenamePrefix}_Beat`, format: 'auto', 'format.codec': 'auto' } }
+    prompt['172'] = { class_type: 'MiniMaxH3VideoMerge', inputs: { images_a: previousFrames, audio_a: ['1701', 1], images_b: ['171', 0], audio_b: ['171', 1], seam_smooth: options.continuationAssembly.hardCut ? 0 : 1, color_match: options.continuationAssembly.hardCut ? 'disabled' : 'seam_fade', blend_frames: options.continuationAssembly.hardCut ? 0 : options.continuationAssembly.blendFrames, fps: 24 } }
     prompt['18'] = { class_type: 'CreateVideo', inputs: { images: ['172', 0], audio: ['172', 1], fps: 24, bit_depth: 8, color_space: 'sRGB' } }
   }
   if (options.latentCapture) {
@@ -391,8 +397,8 @@ export function extractOutputFile(history: Record<string, unknown>, promptId: st
   return candidates.find((candidate) => expected.test(candidate.filename))
 }
 
-export function extractOutputUrl(history: Record<string, unknown>, promptId: string, comfyUrl: string, mediaType: 'video' | 'audio' | 'image' = 'video') {
-  const file = extractOutputFile(history, promptId, mediaType)
+export function extractOutputUrl(history: Record<string, unknown>, promptId: string, comfyUrl: string, mediaType: 'video' | 'audio' | 'image' = 'video', nodeId?: string) {
+  const file = extractOutputFile(history, promptId, mediaType, nodeId)
   if (file) {
     const query = new URLSearchParams({ filename: file.filename, subfolder: file.subfolder ?? '', type: file.type ?? 'output' })
     const upstream = `${comfyUrl.replace(/\/+$/, '')}/view?${query.toString()}`

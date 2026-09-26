@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowRight, Check, Clipboard, Clock3, Copy, Eraser, FileText, LoaderCircle, MessageSquareText, RefreshCw, RotateCcw, Sparkles, WandSparkles } from 'lucide-react'
 import { promptMarkupLegend } from '../lib/h3SceneCompiler'
 import { compileScratchpad, type ScratchpadTarget } from '../lib/scratchpadCompiler'
+import { normalizeInlineSuggestion } from '../lib/inlineSuggestion'
 import type { OllamaModel } from '../types'
-import { H3PromptEditor } from './H3PromptEditor'
+import { H3PromptEditor, type H3PromptEditorHandle } from './H3PromptEditor'
 
 const STORAGE_KEY = 'oyama.prompt-scratchpad.v1'
 const targets: Array<{ id: ScratchpadTarget; label: string; note: string }> = [
@@ -31,6 +32,7 @@ export function ScratchpadWorkspace({ provider, url, model, models, available, c
   const [target, setTarget] = useState<ScratchpadTarget>('h3')
   const [duration, setDuration] = useState(5)
   const [busy, setBusy] = useState<keyof typeof toolInstructions | null>(null)
+  const [aiProgress, setAiProgress] = useState<{ thinking: string; content: string } | null>(null)
   const [completionEnabled, setCompletionEnabled] = useState(true)
   const [completion, setCompletion] = useState('')
   const [completionStatus, setCompletionStatus] = useState<'idle' | 'waiting' | 'working' | 'error'>('idle')
@@ -38,6 +40,7 @@ export function ScratchpadWorkspace({ provider, url, model, models, available, c
   const [beforeAi, setBeforeAi] = useState('')
   const [copied, setCopied] = useState(false)
   const completionRevision = useRef(0)
+  const editor = useRef<H3PromptEditorHandle>(null)
   const compiled = useMemo(() => compileScratchpad(draft, target, duration), [draft, duration, target])
   const selectedModel = models.some(item => item.name === model) ? model : models[0]?.name ?? ''
   const words = draft.trim() ? draft.trim().split(/\s+/).length : 0
@@ -52,8 +55,8 @@ export function ScratchpadWorkspace({ provider, url, model, models, available, c
     const timer = window.setTimeout(async () => {
       setCompletionStatus('working')
       try {
-        const result = await window.minimax.generateWithOllama(url, selectedModel, `Continue the prompt below with one useful next phrase or sentence, at most 30 words. Match its style and do not repeat existing text. Return only the continuation, with no quotes or Markdown.\n\n${draft.slice(-2400)}`, provider)
-        if (completionRevision.current === revision) { setCompletion(result.trim().replace(/^(?:continuation\s*:\s*|["'])|["']$/gi, '')); setCompletionStatus('idle') }
+        const result = await window.minimax.generatePromptCompletion(url, selectedModel, draft, provider)
+        if (completionRevision.current === revision) { setCompletion(normalizeInlineSuggestion(result)); setCompletionStatus('idle') }
       } catch (error) {
         if (completionRevision.current === revision) { setCompletion(''); setCompletionStatus('error'); setCompletionError(error instanceof Error ? error.message : String(error)) }
       }
@@ -63,15 +66,15 @@ export function ScratchpadWorkspace({ provider, url, model, models, available, c
 
   const runTool = async (tool: keyof typeof toolInstructions) => {
     if (!draft.trim() || !available || busy) return
-    setBusy(tool); setCompletion('')
+    setBusy(tool); setCompletion(''); setAiProgress({ thinking: '', content: '' })
     try {
-      const result = await window.minimax.generateWithOllama(url, selectedModel, `${toolInstructions[tool]}\n\nTarget: ${targets.find(item => item.id === target)?.label}\nDuration: ${duration} seconds\n\nSOURCE PROMPT\n${draft}`, provider)
+      const result = await window.minimax.generateWithOllama(url, selectedModel, `${toolInstructions[tool]}\n\nTarget: ${targets.find(item => item.id === target)?.label}\nDuration: ${duration} seconds\n\nSOURCE PROMPT\n${draft}`, provider, setAiProgress)
       setBeforeAi(draft); setDraft(result.trim())
       onNotice('success', `${tool[0].toUpperCase() + tool.slice(1)} pass applied. You can undo it in Scratchpad.`)
-    } catch (error) { onNotice('error', `Local prompt tool failed: ${error instanceof Error ? error.message : String(error)}`) }
+    } catch (error) { setAiProgress(null); onNotice('error', `Local prompt tool failed: ${error instanceof Error ? error.message : String(error)}`) }
     finally { setBusy(null) }
   }
-  const acceptCompletion = () => { if (!completion) return; setDraft(current => `${current}${/\s$/.test(current) ? '' : ' '}${completion}`); setCompletion('') }
+  const acceptCompletion = (range: { start: number; end: number }) => { if (!completion) return; editor.current?.insertText(completion, range); setCompletion('') }
   const copyCompiled = async () => {
     await navigator.clipboard.writeText(compiled)
     setCopied(true); window.setTimeout(() => setCopied(false), 1400)
@@ -82,8 +85,9 @@ export function ScratchpadWorkspace({ provider, url, model, models, available, c
     <div className="scratchpad-layout">
       <section className="scratchpad-canvas">
         <header><div><FileText size={16} /><span><strong>Draft</strong><small>{words} words · {draft.length.toLocaleString()} characters · saved locally</small></span></div><div><button type="button" disabled={!beforeAi} onClick={() => { setDraft(beforeAi); setBeforeAi('') }}><RotateCcw size={14} />Undo AI</button><button type="button" disabled={!draft} onClick={() => { if (window.confirm('Clear the Scratchpad draft?')) { setDraft(''); setBeforeAi('') } }}><Eraser size={14} />Clear</button></div></header>
-        <H3PromptEditor value={draft} onChange={setDraft} ariaLabel="Scratchpad prompt" placeholder="Start with an idea, or type ## for structured H3 sections…" completion={completion} onAcceptCompletion={acceptCompletion} />
+        <H3PromptEditor ref={editor} value={draft} onChange={setDraft} ariaLabel="Scratchpad prompt" placeholder="Start with an idea, or type ## for structured H3 sections…" completion={completion} onAcceptCompletion={acceptCompletion} />
         {(completionStatus === 'waiting' || completionStatus === 'working' || completionStatus === 'error') && <div className={`scratchpad-completion-status ${completionStatus === 'error' ? 'error' : ''}`} role="status" aria-live="polite">{completionStatus === 'error' ? <><span>Inline autocomplete could not reach {provider === 'ollama' ? 'Ollama' : 'LM Studio'}: {completionError}</span><button type="button" onClick={onRefresh}>Reconnect</button></> : <><LoaderCircle className="spin" size={12} /><span>{completionStatus === 'waiting' ? 'Autocomplete queued…' : `${provider === 'ollama' ? 'Ollama' : 'LM Studio'} is writing locally…`}</span></>}</div>}
+        {aiProgress && <section className="create-prompt-thinking" aria-label="Local AI progress"><header><strong>{busy ? 'Local model is working…' : 'Local model finished'}</strong><small role="status" aria-live="polite">{!busy ? 'Applied to draft' : aiProgress.content ? 'Draft received' : aiProgress.thinking ? 'Thinking' : 'Waiting for model'}</small></header><details open={Boolean(busy)}><summary>Model thinking</summary><pre>{aiProgress.thinking ? aiProgress.thinking.slice(-4000) : 'This model has not sent reasoning text.'}</pre></details></section>}
         <footer><span>Type <code>##</code> for tags · right-click for the tag menu</span><label><input type="checkbox" checked={completionEnabled} onChange={event => setCompletionEnabled(event.target.checked)} />Local inline autocomplete</label></footer>
       </section>
       <aside className="scratchpad-tools">

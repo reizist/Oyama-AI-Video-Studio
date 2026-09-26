@@ -29,6 +29,10 @@ export function continuationSourceState(job: GenerationJob): ScenePromptState {
   return state
 }
 
+export function continuationSourcePrompt(job: GenerationJob): string {
+  return job.continuityState?.scene?.trim() || job.prompt.trim()
+}
+
 export function normalizeContinuationSources(beats: ContinueBeat[]) {
   return beats.map((beat, index) => {
     if (index === 0) return { ...beat, sourceMode: 'original' as const, sourceBeatId: undefined }
@@ -45,7 +49,7 @@ export function continuationReferenceReplaced(beat: ContinueBeat, file: SceneRef
   return !ownerId || references.some(ref => ref.file.path === file.path && ref.ownerId === ownerId)
 }
 
-export const continuationBeatSignature = (beat: ContinueBeat, videoName = '', route = '', continuity?: ContinuationSettings) => JSON.stringify({ name: beat.name, videoName, route, prompt: beat.prompt, duration: beat.duration, frameTime: beat.frameTime, continuity, cameraOverride: beat.cameraOverride, continuityBreak: beat.continuityBreak, sourceMode: beat.sourceMode ?? 'previous', sourceBeatId: beat.sourceBeatId, replacements: Object.entries(beat.replacements).map(([role, file]) => [role, file?.path, beat.replacementOwnerIds?.[role as keyof ContinueBeat['replacementOwnerIds']]]) })
+export const continuationBeatSignature = (beat: ContinueBeat, videoName = '', route = '', continuity?: ContinuationSettings) => JSON.stringify({ name: beat.name, videoName, route, prompt: beat.prompt, duration: beat.duration, frameTime: beat.frameTime, continuity, cameraOverride: beat.cameraOverride, shotSize: beat.shotSize, cameraAngle: beat.cameraAngle, cameraMovement: beat.cameraMovement, continuityBreak: beat.continuityBreak, sourceMode: beat.sourceMode ?? 'previous', sourceBeatId: beat.sourceBeatId, replacements: Object.entries(beat.replacements).map(([role, file]) => [role, file?.path, beat.replacementOwnerIds?.[role as keyof ContinueBeat['replacementOwnerIds']]]) })
 
 export function continuationFilenamePart(value: string, fallback: string, maxLength = 48) {
   return value.trim().replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, maxLength) || fallback.slice(0, maxLength)
@@ -63,6 +67,27 @@ export function continuationLineage(script: ContinueScript, target: ContinueBeat
     current = parentId ? script.beats.find(beat => beat.id === parentId) : undefined
   }
   return lineage
+}
+
+export function continuationLongestSequence(script: ContinueScript, beatJobs: Map<string, GenerationJob | undefined>, sourceDuration: number) {
+  const base = Math.max(0, Number.isFinite(sourceDuration) ? sourceDuration : 0)
+  let longest: { job?: GenerationJob; beats: ContinueBeat[]; duration: number } = { beats: [], duration: base }
+  for (const beat of script.beats) {
+    const job = beatJobs.get(beat.id)
+    if (job?.status !== 'completed' || !job.outputUrl) continue
+    const beats = continuationLineage(script, beat)
+    if (beats.some(item => beatJobs.get(item.id)?.status !== 'completed')) continue
+    const duration = base + beats.reduce((total, item) => total + (beatJobs.get(item.id)?.continuation?.deliveredDuration ?? item.duration), 0)
+    if (duration > longest.duration || (duration === longest.duration && beats.length > longest.beats.length)) longest = { job, beats, duration }
+  }
+  let start = base
+  const segments = [{ id: 'original', label: 'Original', start: 0, duration: base }, ...longest.beats.map(beat => {
+    const duration = beatJobs.get(beat.id)?.continuation?.deliveredDuration ?? beat.duration
+    const segment = { id: beat.id, label: beat.name, start, duration }
+    start += duration
+    return segment
+  })]
+  return { ...longest, segments }
 }
 
 export function continuationOutputStem(script: ContinueScript, target: ContinueBeat) {

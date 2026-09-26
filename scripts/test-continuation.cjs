@@ -1,11 +1,13 @@
 const assert = require('node:assert/strict')
 const { load } = require('./test-ts-loader.cjs')
 const { buildMiniMaxWorkflow, extractOutputFile } = load('src/lib/workflow.ts')
-const { normalizeContinuationSources, continuationReferenceReplaced, continuationSourceState, continuationBeatSignature, continuationOutputName, continuationOutputStem, continuationPreviousAction, continuationTiming, nextContinuationOpenRequest } = load('src/lib/continuation.ts')
+const { normalizeContinuationSources, continuationReferenceReplaced, continuationSourceState, continuationSourcePrompt, continuationBeatSignature, continuationLongestSequence, continuationOutputName, continuationOutputStem, continuationPreviousAction, continuationTiming, nextContinuationOpenRequest } = load('src/lib/continuation.ts')
 const { bindSceneReferences } = load('src/lib/scenePromptState.ts')
 const { compileScene } = load('src/lib/h3SceneCompiler.ts')
 const legacySource = { prompt: 'Kierra walks forward.', duration: 5, mode: 'reference', referenceFiles: [{ kind: 'image', path: 'kierra.png', name: 'Character: Kierra / master identity', referenceRole: 'subject', referenceRetention: 'preserve' }] }
 const restoredSource = continuationSourceState(legacySource)
+assert.equal(continuationSourcePrompt({ ...legacySource, prompt: 'Compiled workflow text.', continuityState: { ...restoredSource, scene: 'Kierra walks forward.' } }), 'Kierra walks forward.', 'source prompt editor recovers the authored H3 text')
+assert.equal(continuationSourcePrompt(legacySource), 'Kierra walks forward.', 'older jobs fall back to their saved prompt')
 assert.equal(restoredSource.references[0].ownerId, restoredSource.characters[0].id)
 const inheritedSource = bindSceneReferences(restoredSource, [{ file: legacySource.referenceFiles[0], purpose: 'generic', label: 'Inherited identity', source: 'continuity' }])
 assert.equal(compileScene(inheritedSource).conflicts.some(conflict => conflict.code === 'owner-required'), false, 'legacy continuation keeps the source identity with Kierra')
@@ -69,6 +71,12 @@ assert.equal(frameTiming.deliveredFrames, 124)
 const frameAssembly = buildMiniMaxWorkflow({ ...base, mode: 'image', duration: frameTiming.renderDuration, continuationAssembly: { sourceVideo: { name: 'source.mp4' }, trimFrames: frameTiming.trimFrames, blendFrames: 0, useMotionTrim: false }, firstFrame: 'frame.png' }, models, { first: { name: 'frame.png' }, images: [], videos: [], audios: [], source: { name: 'source.mp4' } })
 assert.equal(frameAssembly['171'].inputs.trim_frames, 0)
 assert.deepEqual(Array.from(frameAssembly['18'].inputs.images), ['172', 0])
+const hardCut = buildMiniMaxWorkflow({ ...base, duration: frameTiming.renderDuration, continuationAssembly: { sourceVideo: { name: 'source.mp4' }, trimFrames: 0, blendFrames: 0, hardCut: true } }, models, { images: [], videos: [], audios: [], source: { name: 'source.mp4' } })
+assert.equal(hardCut['172'].inputs.seam_smooth, 0)
+assert.equal(hardCut['172'].inputs.color_match, 'disabled')
+assert.equal(hardCut['172'].inputs.blend_frames, 0)
+assert.equal(hardCut['171'].inputs.trim_frames, 0)
+assert.equal(hardCut['161'], undefined, 'Hard cut must not attach a motion extender')
 const beat1 = { id: 'one', name: 'Walk to Window', prompt: 'Walk to the window.', sourceMode: 'previous', replacements: {} }
 const beat2 = { id: 'two', name: 'Look Outside', prompt: 'Look Outside', sourceMode: 'previous', replacements: {} }
 const beat3 = { id: 'three', name: 'Turn to Door', prompt: 'Turn toward the door.', sourceMode: 'previous', replacements: {} }
@@ -88,6 +96,13 @@ assert.notEqual(continuationBeatSignature(beat1, script.videoName, 'text:last'),
 const sharedContinuity = { dialogueMode: 'inherit', contextFrames: 22, blendFrames: 0, carryAudio: true }
 assert.notEqual(continuationBeatSignature(beat1, script.videoName, 'text:motion', sharedContinuity), continuationBeatSignature(beat1, script.videoName, 'text:motion', { ...sharedContinuity, contextFrames: 39 }), 'Changing an all-beats continuity setting must invalidate the previous render signature')
 assert.equal(JSON.parse(continuationBeatSignature(beat1, script.videoName, 'text:motion', sharedContinuity)).continuity.carryAudio, true)
+assert.notEqual(continuationBeatSignature(beat1), continuationBeatSignature({ ...beat1, shotSize: 'close-up' }), 'A new camera instruction invalidates a rendered beat')
+const completed = (id, deliveredDuration) => ({ id, status: 'completed', outputUrl: `${id}.mp4`, continuation: { deliveredDuration } })
+const longest = continuationLongestSequence(script, new Map([['one', completed('one', 4.5)], ['two', completed('two', 5.25)], ['three', completed('three', 3.75)]]), 5)
+assert.equal(longest.job.id, 'three')
+assert.deepEqual(Array.from(longest.segments, segment => [segment.label, segment.start]), [['Original', 0], ['Walk to Window', 5], ['Look Outside', 9.5], ['Turn to Door', 14.75]])
+const branchedScript = { ...script, beats: [beat1, beat2, { ...beat3, sourceMode: 'original' }] }
+assert.equal(continuationLongestSequence(branchedScript, new Map([['one', completed('one', 4.5)], ['two', completed('two', 5.25)], ['three', completed('three', 8)]]), 5).job.id, 'two', 'The player selects the longest completed branch, not the last beat in script order')
 assert.equal(continuationOutputStem(script, beat3), 'Morning-Scene__beat1-Walk-to-Window_beat2-Look-Outside_beat3-Turn-to-Door')
 assert.equal(continuationOutputStem({ ...script, beats: [beat1, beat2, { ...beat3, sourceMode: 'original' }] }, { ...beat3, sourceMode: 'original' }), 'Morning-Scene__beat3-Turn-to-Door')
 assert.equal(continuationOutputStem({ ...script, beats: [beat1, beat2, { ...beat3, sourceMode: 'beat', sourceBeatId: beat1.id }] }, { ...beat3, sourceMode: 'beat', sourceBeatId: beat1.id }), 'Morning-Scene__beat1-Walk-to-Window_beat3-Turn-to-Door')

@@ -6,7 +6,7 @@ const settings: AppSettings = {
   comfyUrl: 'http://127.0.0.1:8188',
   ollamaUrl: 'http://127.0.0.1:11434',
   ollamaModel: 'qwen3:latest',
-  lmStudioUrl: 'http://127.0.0.1:1234',
+  lmStudioUrl: 'http://127.0.0.1:1234/api/v1/',
   lmStudioModel: '',
   modelRoot,
   paths: {
@@ -146,9 +146,10 @@ export function installBrowserMock() {
         { name: 'qwen3:latest', size: 5_225_388_164, family: 'qwen3', parameterSize: '8.2B', local: true },
         { name: 'llama3.1:8b', size: 4_920_753_328, family: 'llama', parameterSize: '8.0B', local: true },
       ] }),
-    generateWithOllama: async () => 'A cinematic wide shot with deliberate subject motion, controlled camera movement, natural lighting, and synchronized environmental audio.',
+    generateWithOllama: async (_url, _model, _prompt, _provider, onUpdate) => { const content = 'A cinematic wide shot with deliberate subject motion, controlled camera movement, natural lighting, and synchronized environmental audio.'; onUpdate?.({ thinking: 'Checking the scene for clear camera movement and continuity.', content: '' }); onUpdate?.({ thinking: 'Checking the scene for clear camera movement and continuity.', content }); return content },
+    generatePromptCompletion: async () => 'with a slow, steady camera move.',
     generateWithOllamaVision: async () => 'A MiniMax-ready prompt grounded in the visible identity, composition, lighting, and continuity details of the supplied reference images.',
-    generateStructuredWithOllama: async (_url, _model, prompt, schema) => {
+    generateStructuredWithOllama: async (_url, _model, prompt, schema, _provider, _images, onUpdate) => {
       const properties = schema.properties as Record<string, unknown> | undefined
       if (properties?.operation) {
         const request = prompt.match(/REQUEST:\n([\s\S]*?)(?:\n\n(?:RECENT CONVERSATION|Return exactly)|$)/)?.[1] ?? prompt
@@ -171,6 +172,7 @@ export function installBrowserMock() {
       }
       if (properties?.direction) {
         const draft = prompt.match(/DRAFT:\n([\s\S]*?)(?:\n\nReturn the required structured fields|$)/)?.[1]?.trim()
+        onUpdate?.({ thinking: 'Checking the authored scene, timing, and reference constraints.', content: '' })
         return {
           summary: 'A clear, continuous shot that preserves the authored scene and its constraints.',
           direction: draft ? `Clarify the authored scene in concrete, observable terms while preserving every requested detail. ${draft}` : 'A single, continuous cinematic shot with physically coherent subject movement and synchronized natural sound.',
@@ -213,6 +215,8 @@ export function installBrowserMock() {
     openMovieEditor: async () => { window.open(`${location.pathname}?movieEditor=1`, 'oyama-ai-movie', 'popup=yes,width=1440,height=920,resizable=yes') },
     exportVideo: async () => { throw new Error('Video export requires the desktop app.') },
     prepareContinuationSource: async (sources) => sources[0],
+    prepareRippleChunkSource: async (source) => source,
+    assembleRippleChunks: async () => ({ path: 'C:/oyama-ui-e2e/ripple-long.mp4', name: 'ripple-long.mp4' }),
   }
   window.minimax = api
 }

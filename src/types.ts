@@ -1,4 +1,4 @@
-export type View = 'create' | 'continue' | 'scratchpad' | 'ltx25' | 'music' | 'anime' | 'zimage' | 'referenceprep' | 'characters' | 'hair' | 'wardrobes' | 'accessories' | 'locations' | 'queue' | 'library' | 'clipmaster' | 'movie' | 'settings'
+export type View = 'create' | 'continue' | 'scratchpad' | 'ltx25' | 'ltxripple' | 'photoedit' | 'music' | 'anime' | 'zimage' | 'referenceprep' | 'characters' | 'hair' | 'wardrobes' | 'accessories' | 'locations' | 'queue' | 'library' | 'clipmaster' | 'movie' | 'settings'
 export type GenerationMode = 'text' | 'image' | 'frames' | 'reference'
 export type ModelKind = 'diffusion_models' | 'text_encoders' | 'vae' | 'loras' | 'vae_approx' | 'clip_vision'
 export type MediaKind = 'image' | 'video' | 'audio'
@@ -307,6 +307,7 @@ export type Ltx25GenerationOptions = {
   loraStrength?: number
   seed: number
   preset: 'quality' | 'turbo'
+  livePreview?: boolean
   previewOverride?: { nodeType: string; fps: number }
   attentionBackend?: string
   gpuRouting?: WorkflowGpuRouting
@@ -343,7 +344,7 @@ export type AceStepGenerationOptions = {
 export type GenerationOptions = {
   latentCapture?: { filenamePrefix: string }
   motionContext?: { latentPath: string; contextFrames: number; blendFrames: number; carryAudio: boolean; suppressAudio?: boolean }
-  continuationAssembly?: { sourceVideo: UploadedFile; trimFrames: number; blendFrames: number; useMotionTrim?: boolean }
+  continuationAssembly?: { sourceVideo: UploadedFile; trimFrames: number; blendFrames: number; useMotionTrim?: boolean; hardCut?: boolean }
   /** Explicit user override of scene validation; transport validation still runs. */
   ignoreSceneConflicts?: boolean
   sceneState?: import('./lib/scenePromptState').ScenePromptState
@@ -361,6 +362,7 @@ export type GenerationOptions = {
   solCache?: { nodeType: string; threshold: number; maxSteps: number }
   h3ParallelAttention?: { nodeType: string; devices: 'auto' | number }
   gpuRouting?: WorkflowGpuRouting
+  livePreview?: boolean
   previewOverride?: { frames: number; fps: number; nodeType?: string; vaeName?: string; jpegQuality?: number }
   loraStrength?: number
   userLoras?: AppliedLora[]
@@ -504,6 +506,9 @@ export type GenerationJob = {
   refinementStepCostMultiplier?: number
   lastSamplerStepAt?: number
   estimatedSamplerStepMs?: number
+  activeNodeId?: string
+  activeNodeStartedAt?: number
+  lastNodeDurationMs?: number
   /** Timestamp when ComfyUI first confirmed that it began executing this prompt. */
   startedAt?: number
   /** A small, persisted transcript of meaningful ComfyUI state transitions. */
@@ -541,11 +546,19 @@ export type GenerationJob = {
   naturalMovement?: boolean
   loraStrength?: number
   userLoras?: AppliedLora[]
-  provider?: 'minimax' | 'ltx25' | 'acestep' | 'music3'
+  provider?: 'minimax' | 'ltx25' | 'ltxripple' | 'acestep' | 'music3'
   mediaType?: 'video' | 'audio' | 'image'
   movieLink?: { projectId: string; sceneId: string; shotId: string }
   characterProjectId?: string
   locationProjectId?: string
+}
+
+export type LegacyMigrationStatus = {
+  available: boolean
+  migrated: boolean
+  migratedAt?: string
+  needsBrowserStorageRepair: boolean
+  repairError?: string
 }
 
 export type UploadedFile = { name: string; subfolder?: string; type?: string }
@@ -554,11 +567,11 @@ export type DesktopApi = {
   getObjectInfo(url: string): Promise<Record<string, { input: { required: Record<string, unknown[]> } }>>
   uploadImageData(url: string, data: string): Promise<UploadedFile>
   getOutputImage(url: string, file: { filename: string; subfolder?: string; type?: string }): Promise<string>
-  saveComfyOutputImage(url: string, file: { filename: string; subfolder?: string; type?: string }, outputDirectory: string): Promise<{ path: string; name: string }>
+  saveComfyOutputImage(url: string, file: { filename: string; subfolder?: string; type?: string }, outputDirectory: string, purpose?: 'character' | 'photo-edit' | 'image-creation'): Promise<{ path: string; name: string }>
   saveStillImage(url: string, file: { filename: string; subfolder?: string; type?: string }, outputDirectory: string): Promise<{ path: string; name: string }>
   getSettings(): Promise<AppSettings>
-  getLegacyMigrationStatus(): Promise<{ available: boolean; migrated: boolean; migratedAt?: string; needsBrowserStorageRepair: boolean }>
-  migrateLegacyData(replaceBrowserStorage?: boolean): Promise<{ available: boolean; migrated: boolean; migratedAt?: string; needsBrowserStorageRepair: boolean }>
+  getLegacyMigrationStatus(): Promise<LegacyMigrationStatus>
+  migrateLegacyData(replaceBrowserStorage?: boolean): Promise<LegacyMigrationStatus>
   getGpuTelemetry(): Promise<GpuTelemetry>
   getRenderBenchmarks(): Promise<RenderBenchmark[]>
   saveRenderBenchmarks(benchmarks: RenderBenchmark[]): Promise<RenderBenchmark[]>
@@ -586,6 +599,8 @@ export type DesktopApi = {
   trimVideo(source: string, start: number, end: number, outputDirectory: string, ffmpegPath: string): Promise<{ path: string; name: string }>
   exportVideo(source: string, suggestedName: string): Promise<string | null>
   prepareContinuationSource(sources: string[], throughTime: number | null, outputDirectory: string, ffmpegPath: string): Promise<string>
+  prepareRippleChunkSource(source: string, startFrame: number, sourceFrames: number, outputDirectory: string, ffmpegPath: string): Promise<string>
+  assembleRippleChunks(clips: Array<{ source: string; sourceFrames: number; overlapFrames: number }>, originalSource: string, duration: number, width: number, height: number, blend: boolean, outputDirectory: string, ffmpegPath: string): Promise<{ path: string; name: string }>
   getVideoMetadata(source: string, ffmpegPath: string): Promise<{ duration: number; fps: number; frameCount: number; width: number; height: number }>
   extractClipMasterFrames(source: string, frames: Array<{ index: number; role: 'start' | 'end' | 'frame' }>, outputDirectory: string, ffmpegPath: string, sourceName: string): Promise<{ folder: string; files: Array<{ path: string; name: string; index: number; role: 'start' | 'end' | 'frame' }> }>
   chooseClipMasterExportPath(outputDirectory: string, sourceName: string): Promise<string | null>
@@ -602,9 +617,10 @@ export type DesktopApi = {
   /** Absolute filesystem path, not a playback URL. */
   resolveOutput(outputDirectory: string, file: { filename: string; subfolder?: string; type?: string }): Promise<string | null>
   getLocalLlmStatus(url: string, provider?: AppSettings['llmProvider']): Promise<LocalLlmStatus>
-  generateWithOllama(url: string, model: string, prompt: string, provider?: AppSettings['llmProvider']): Promise<string>
+  generateWithOllama(url: string, model: string, prompt: string, provider?: AppSettings['llmProvider'], onUpdate?: (update: { thinking: string; content: string }) => void): Promise<string>
+  generatePromptCompletion(url: string, model: string, context: string, provider?: AppSettings['llmProvider']): Promise<string>
   generateWithOllamaVision(url: string, model: string, prompt: string, imagePaths: string[], provider?: AppSettings['llmProvider']): Promise<string>
-  generateStructuredWithOllama(url: string, model: string, prompt: string, schema: Record<string, unknown>, provider?: AppSettings['llmProvider'], imagePaths?: string[]): Promise<unknown>
+  generateStructuredWithOllama(url: string, model: string, prompt: string, schema: Record<string, unknown>, provider?: AppSettings['llmProvider'], imagePaths?: string[], onUpdate?: (update: { thinking: string; content: string }) => void): Promise<unknown>
   getLanStatus(): Promise<LanStatus>
   syncMobileCharacters(characters: unknown[]): Promise<{ synced: number }>
   rotateLanToken(): Promise<LanStatus>

@@ -21,6 +21,7 @@ const handlers = new Map()
 vm.runInNewContext(ts.transpileModule(registrations.join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, {
   ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
   loadSettings: async () => ({ outputDirectory: directory }),
+  trustedComfyOutputDirectory: async (_settings, outputDirectory) => outputDirectory === directory,
   normalize: path.normalize, extname: path.extname, existsSync: fs.existsSync,
   selectedMediaExtensions: new Set(['.mp4']),
   resolveComfyOutput: (_directory, file) => file.filename === path.basename(video) ? video : null,
@@ -53,6 +54,8 @@ vm.runInNewContext(ts.transpileModule(fs.readFileSync('src/lib/useLivePreview.ts
   require: (name) => name === 'react' ? {
     useState: () => [null, (value) => { preview = value }],
     useEffect: (effect) => effect(),
+    useRef: (value) => ({ current: value }),
+    useCallback: (callback) => callback,
   } : { createId: () => 'test-client' },
   URL, URLSearchParams, WebSocket: FakeSocket,
 })

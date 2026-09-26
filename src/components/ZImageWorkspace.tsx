@@ -20,6 +20,7 @@ type StoredWorkspace = {
   seed: number
   steps: number
   guidance: number
+  livePreview: boolean
 }
 
 const defaults: StoredWorkspace = {
@@ -34,6 +35,7 @@ const defaults: StoredWorkspace = {
   seed: Math.floor(Math.random() * 1_000_000_000),
   steps: 8,
   guidance: 1,
+  livePreview: true,
 }
 
 function readWorkspace(): StoredWorkspace {
@@ -86,6 +88,7 @@ export function ZImageWorkspace({
   const [seed, setSeed] = useState(initial.seed)
   const [steps, setSteps] = useState(initial.steps)
   const [guidance, setGuidance] = useState(initial.guidance)
+  const [livePreview, setLivePreview] = useState(initial.livePreview)
   const [job, setJob] = useState<ZImageJob | null>(null)
   const [result, setResult] = useState<MediaFile | null>(null)
   const [busy, setBusy] = useState(false)
@@ -115,8 +118,8 @@ export function ZImageWorkspace({
   }, [])
 
   useEffect(() => {
-    localStorage.setItem('minimax.zimage-workspace', JSON.stringify({ prompt, negativePrompt, negativePromptInitialized: true, resolution, variant, model, encoder, vae, seed, steps, guidance }))
-  }, [encoder, guidance, model, negativePrompt, prompt, resolution, seed, steps, vae, variant])
+    localStorage.setItem('minimax.zimage-workspace', JSON.stringify({ prompt, negativePrompt, negativePromptInitialized: true, resolution, variant, model, encoder, vae, seed, steps, guidance, livePreview }))
+  }, [encoder, guidance, livePreview, model, negativePrompt, prompt, resolution, seed, steps, vae, variant])
 
   useEffect(() => {
     if (!job) return
@@ -134,7 +137,7 @@ export function ZImageWorkspace({
           ?? Object.values(entry?.outputs ?? {}).flatMap((output) => output.images ?? [])[0]
         if (image) {
           const preview = await window.minimax.getOutputImage(job.url, image)
-          const saved = await window.minimax.saveComfyOutputImage(job.url, image, outputDirectory)
+          const saved = await window.minimax.saveComfyOutputImage(job.url, image, outputDirectory, 'image-creation')
           if (!disposed) {
             setResult({ ...saved, preview, kind: 'image' })
             updateJob(null); setBusy(false); setError(false); liveProgressRef.current = null; setLiveProgress(null); setMessage('Image complete and ready to use.')
@@ -185,7 +188,9 @@ export function ZImageWorkspace({
     setBusy(true); setResult(null); setError(false); liveProgressRef.current = null; setLiveProgress(null); setMessage(`Submitting ${variant === 'turbo' ? 'Z-Image Turbo' : 'Original Z-Image'} workflow…`)
     try {
       const [width, height] = resolution.split('x').map(Number)
-      const response = await window.minimax.submitPrompt(url, buildZImage(prompt.trim(), width, height, seed, model, encoder, vae, steps, guidance, variant, variant === 'base' ? negativePrompt.trim() : '', attentionBackend, gpuRouting), live.clientId)
+      const graph = buildZImage(prompt.trim(), width, height, seed, model, encoder, vae, steps, guidance, variant, variant === 'base' ? negativePrompt.trim() : '', attentionBackend, gpuRouting, livePreview)
+      const response = await window.minimax.submitPrompt(url, graph, live.clientId)
+      live.registerWorkflow(response.prompt_id, graph, livePreview)
       if (gpuRouting) console.info('[GPU Routing] Z-Image component routing enabled.', gpuRouting)
       updateJob({ id: response.prompt_id, url })
     } catch (caught) {
@@ -214,7 +219,7 @@ export function ZImageWorkspace({
     finally { setAssisting(false) }
   }
 
-  const visibleLivePreview = busy && job && live.preview?.promptId === job.id ? live.preview : null
+  const visibleLivePreview = livePreview && busy && job && live.preview?.promptId === job.id ? live.preview : null
 
   return <div className="standard-page zimage-workspace">
     <div className="page-heading">
@@ -238,6 +243,7 @@ export function ZImageWorkspace({
         {variant === 'base' && <div className="field-group zimage-negative-prompt"><div className="field-label"><label htmlFor="zimage-negative-prompt">Negative prompt <small>Quality preset</small></label><span>{negativePrompt.length.toLocaleString()} characters</span></div><textarea id="zimage-negative-prompt" value={negativePrompt} onChange={(event) => setNegativePrompt(event.target.value)} placeholder="Describe artifacts or unwanted elements to suppress…" disabled={busy} /><p className="field-help">Prefilled with a balanced artifact, anatomy, geometry, and unwanted-text filter. Edit or clear it when those elements are intentional.</p></div>}
 
         <RenderSize value={resolution} onChange={setResolution} provider="zimage" />
+        <div className="field-group"><label className="video-checkbox"><input type="checkbox" checked={livePreview} onChange={(event) => setLivePreview(event.target.checked)} />Show live previews while generating</label><small className="field-help">Off skips the preview output for new renders. Progress and the saved image stay available.</small></div>
         <div className="zimage-seed-row"><label>Seed<input type="number" min="0" max="999999999999" value={seed} disabled={busy} onChange={(event) => setSeed(Number(event.target.value))} /></label><button className="secondary-button" disabled={busy} onClick={() => setSeed(Math.floor(Math.random() * 1_000_000_000))}><Dices size={15} />Randomize</button></div>
 
         <details className="zimage-model-settings">
@@ -254,7 +260,7 @@ export function ZImageWorkspace({
 
       <PreviewPanel>
         <div className="panel-heading"><div><span>OUTPUT</span><strong>Image preview</strong></div>{result && <span className="zimage-complete"><Check size={13} />Ready</span>}</div>
-        <div className="zimage-preview-stage">{result?.preview ? <img src={result.preview} alt="Generated Z-Image output" /> : visibleLivePreview ? <figure className="live-preview zimage-live-preview"><img src={visibleLivePreview.url} alt="Live Z-Image sampling preview" /><figcaption>Live sampling preview{visibleLivePreview.step && visibleLivePreview.totalSteps ? ` · step ${visibleLivePreview.step} of ${visibleLivePreview.totalSteps}` : ''}</figcaption></figure> : busy ? <div className="render-state"><ProductionLoading label={liveProgress?.label || 'Preparing image conditioning'}/><strong>Creating your image</strong><span>{liveProgress?.label ?? `${resolution.replace('x', ' × ')} · waiting for live preview`}</span></div> : <div className="empty-preview"><div className="preview-icon"><ImagePlus size={28} /></div><strong>Your image will appear here</strong><span>Describe the still, select a canvas, and generate it locally.</span></div>}</div>
+        <div className="zimage-preview-stage">{result?.preview ? <img src={result.preview} alt="Generated Z-Image output" /> : visibleLivePreview ? <figure className="live-preview zimage-live-preview"><img src={visibleLivePreview.url} alt="Live Z-Image sampling preview" /><figcaption>Live sampling preview{visibleLivePreview.step && visibleLivePreview.totalSteps ? ` · step ${visibleLivePreview.step} of ${visibleLivePreview.totalSteps}` : ''}</figcaption></figure> : busy ? <div className="render-state"><ProductionLoading label={liveProgress?.label || 'Preparing image conditioning'}/><strong>Creating your image</strong><span>{liveProgress?.label ?? `${resolution.replace('x', ' × ')} · ${livePreview ? 'waiting for live preview' : 'rendering without live preview'}`}</span></div> : <div className="empty-preview"><div className="preview-icon"><ImagePlus size={28} /></div><strong>Your image will appear here</strong><span>Describe the still, select a canvas, and generate it locally.</span></div>}</div>
         <div className="zimage-preview-actions"><span>{result ? `${result.name} · ${resolution.replace('x', ' × ')}` : 'Saved to ComfyUI · MiniMax_first_frames'}</span><div><button className="secondary-button" disabled={!result} onClick={() => result && onUse(result, resolution)}><ImagePlus size={16} />MiniMax I2V</button><button className="primary-button" disabled={!result} onClick={() => result && onUseLtx(result)} title="Loads an identity-preserving LTX image-to-video prompt"><Film size={16} />Send to LTX 2.5</button></div></div>
       </PreviewPanel>
     </div>

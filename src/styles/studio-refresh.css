@@ -1,0 +1,127 @@
+/* Shared finish for the desktop shell and every workspace. Feature geometry
+   remains in its own stylesheet; this layer owns common color and rhythm. */
+:root, .app-shell, .app-shell.studio-shell-active,
+.app-shell.video-shell-active, .video-workspace-shell, .minimax-workspace {
+  --bg: #0c100e !important;
+  --surface: #171d19 !important;
+  --surface-1: #1b231e !important;
+  --surface-2: #222c25 !important;
+  --surface-3: #2c3830 !important;
+  --surface-raised: #202a23 !important;
+  --line: #344139 !important;
+  --line-strong: #4c5d51 !important;
+  --text: #f0f5ef !important;
+  --muted: #b5c2b7 !important;
+  --muted-2: #98a99a !important;
+  --accent: #c4f878 !important;
+  --accent-soft: rgb(196 248 120 / 12%) !important;
+  --accent-ink: #19220e !important;
+  --titlebar-surface: #171d19 !important;
+  --oy-bg: var(--bg) !important;
+  --oy-panel: var(--surface) !important;
+  --oy-panel-raised: var(--surface-2) !important;
+  --oy-elevated: var(--surface-3) !important;
+  --oy-border: var(--line) !important;
+  --oy-border-strong: var(--line-strong) !important;
+  --oy-text: var(--text) !important;
+  --oy-muted: var(--muted) !important;
+  --oy-muted-2: var(--muted-2) !important;
+  --oy-accent: var(--accent) !important;
+  --oy-focus: var(--accent) !important;
+  --video-line: var(--line) !important;
+  --video-panel: var(--surface) !important;
+  --video-raised: var(--surface-2) !important;
+  --video-muted: var(--muted) !important;
+}
+
+.app-shell .sidebar {
+  background: linear-gradient(180deg, #19221b, #141b16 58%) !important;
+  border-right-color: var(--line) !important;
+}
+.app-shell .nav-group + .nav-group { margin-top: 12px; }
+.app-shell .nav-button { min-height: 38px !important; margin-block: 1px !important; }
+.app-shell .nav-button.active {
+  border-color: #6b8d4a !important;
+  background: linear-gradient(90deg, #334a2b, #263629) !important;
+  color: var(--text) !important;
+  box-shadow: inset 3px 0 var(--accent) !important;
+}
+.app-shell .nav-button.active svg { color: var(--accent) !important; }
+.app-shell .nav-section-label { color: var(--muted-2) !important; }
+.app-shell .sidebar-status-current,
+.app-shell .model-health { background: var(--surface-2); border-color: var(--line); }
+
+.app-shell .main-area,
+.video-workspace-shell {
+  background: radial-gradient(850px 520px at 90% -12%, rgb(91 134 65 / 11%), transparent 68%), var(--bg) !important;
+}
+.app-shell .page-heading { gap: 16px; }
+.app-shell .page-heading h1 { color: var(--text); }
+.app-shell .page-heading p { color: var(--muted); }
+.app-shell .settings-sidebar {
+  border-color: var(--line) !important;
+  background: var(--surface) !important;
+}
+.app-shell .settings-sidebar button {
+  color: var(--muted);
+}
+.app-shell .settings-sidebar button:hover,
+.app-shell .settings-sidebar button.active {
+  border-color: var(--line-strong) !important;
+  background: var(--accent-soft) !important;
+  color: var(--text) !important;
+}
+.app-shell :is(.composer-panel, .preview-panel, .zimage-composer,
+  .zimage-preview-panel, .settings-section, .library-card, .job-list,
+  .studio-panel, .clip-master-picker) {
+  border-color: var(--line) !important;
+  background: var(--surface) !important;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 16%) !important;
+}
+.app-shell :is(.secondary-button, .icon-button, .ui-button-secondary):hover:not(:disabled) {
+  border-color: var(--line-strong) !important;
+  background: var(--surface-3) !important;
+}
+.app-shell :is(input, textarea, select):focus-visible,
+.app-shell :is(button, a, summary):focus-visible {
+  outline: 2px solid var(--accent) !important;
+  outline-offset: 2px;
+}
+
+.video-workspace-main,
+.video-workspace-main:has(.video-asset-rail.collapsed) {
+  grid-template-columns: minmax(0, 1.08fr) minmax(0, .92fr) !important;
+}
+.video-workbench { border-right-color: var(--line); }
+.video-preview-column { background: rgb(0 0 0 / 12%) !important; }
+.workspace-section-tabs { background: var(--surface) !important; }
+.workspace-section-tabs button { border-right-color: var(--line); }
+.workspace-section-tabs button:hover { background: var(--surface-2); }
+.workspace-section-tabs button.active { background: var(--accent-soft); }
+.video-workspace-tab-panel,
+.video-preview-column { padding: clamp(14px, 1.6vw, 24px); }
+.video-workflow-intro h2 { color: var(--text); font-size: clamp(18px, 1.5vw, 22px); }
+.video-workflow-intro p { color: var(--muted); }
+.video-workspace-tab-panel .create-prompt-panel {
+  border-color: var(--line-strong) !important;
+  background: linear-gradient(145deg, #1e2a20, #171f19) !important;
+}
+.video-workspace-shell .video-generate-bar {
+  border-top-color: var(--line) !important;
+  background: var(--surface) !important;
+}
+
+@media (max-width: 760px) {
+  .video-workspace-main,
+  .video-workspace-main:has(.video-asset-rail.collapsed) {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .video-workbench { min-height: 420px; border-right: 0; }
+  .video-preview-column { border-top: 1px solid var(--line); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell :is(.nav-button, .library-card, .primary-button, .secondary-button) {
+    transition: none !important;
+  }
+}

@@ -146,3 +146,12 @@ export function searchPromptPresets(query: string) {
   return promptPresets.filter((item) => Number.isFinite(promptCommandScore(item, query)))
     .sort((a, b) => promptCommandScore(a, query) - promptCommandScore(b, query))
 }
+
+export function findPromptCommands(query: string, category: 'all' | PromptPresetCategory) {
+  return promptPresets
+    .filter(item => category === 'all' || item.category === category)
+    .map(item => ({ item, score: promptCommandScore(item, query) }))
+    .filter(result => Number.isFinite(result.score))
+    .sort((a, b) => a.score - b.score || a.item.label.localeCompare(b.item.label))
+    .map(result => result.item)
+}

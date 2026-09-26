@@ -1,6 +1,6 @@
-.compare-titlebar-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 30px; flex: 0 0 auto; padding: 0 10px; border: 1px solid rgba(115, 195, 244, .35); border-radius: 7px; background: linear-gradient(180deg, #1c4668, #163652); color: #d5efff; font-size: 11px; font-weight: 750; cursor: pointer; -webkit-app-region: no-drag; }
-.compare-titlebar-button:hover { background: #245a82; }
-.compare-titlebar-button:focus-visible { outline: 2px solid #92d7ff; outline-offset: 2px; }
+.compare-titlebar-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 30px; flex: 0 0 auto; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface-2); color: var(--text); font-size: 11px; font-weight: 750; cursor: pointer; -webkit-app-region: no-drag; }
+.compare-titlebar-button:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.compare-titlebar-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @media (max-width: 1250px) { .compare-titlebar-button { width: 32px; padding: 0; } .compare-titlebar-button span { display: none; } }
 .video-compare-backdrop { position: fixed; inset: 0; z-index: 10000; overflow: auto; background: #070e18; color: #eaf4ff; }
 .video-compare { display: flex; flex-direction: column; min-height: 100%; background: radial-gradient(circle at 52% -18%, rgba(59, 117, 197, .21), transparent 45%), #091320; font-family: 'Segoe UI', sans-serif; }

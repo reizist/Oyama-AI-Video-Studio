@@ -71,3 +71,18 @@ export function characterReferences(project: CharacterProject, includeDetailRefe
   const details = includeDetailReferences ? uniqueImageReferences((project.detailReferences ?? []).flatMap((detail) => detail.images ?? []), 8) : []
   return [...identity, ...details].filter((file, index, all) => all.findIndex((item) => item.path === file.path) === index).slice(0, 9)
 }
+
+export function removeCharacterImage(project: CharacterProject, path: string): Partial<CharacterProject> {
+  const referenceImages = project.referenceImages.filter(file => file.path !== path)
+  const selectedReferencePaths = project.selectedReferencePaths?.filter(selected => selected !== path)
+  return {
+    baseImage: project.baseImage?.path === path ? undefined : project.baseImage,
+    referenceImages,
+    selectedReferencePaths: selectedReferencePaths?.length || !referenceImages.length ? selectedReferencePaths : [referenceImages[0].path],
+    detailReferences: project.detailReferences.map(detail => ({
+      ...detail,
+      images: detail.images.filter(file => file.path !== path),
+      image: detail.image?.path === path ? undefined : detail.image,
+    })),
+  }
+}

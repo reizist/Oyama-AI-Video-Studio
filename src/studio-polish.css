@@ -148,18 +148,18 @@
    room to judge facial consistency, body proportions, and turntable motion. */
 .character-studio {
   max-width: 1760px;
-  --character-panel: color-mix(in srgb, var(--surface-2) 92%, #203149);
-  --character-glow: rgba(115, 172, 255, .16);
+  --character-panel: var(--surface-2);
+  --character-glow: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 .character-studio .character-studio-grid {
   grid-template-columns: minmax(270px, .28fr) minmax(0, 1fr);
   min-height: min(900px, calc(100dvh - 126px));
   border-color: color-mix(in srgb, var(--asset-tone) 32%, var(--line));
   border-radius: 16px;
-  background: linear-gradient(135deg, rgba(84, 137, 205, .06), transparent 36%), var(--surface);
+  background: var(--surface);
   box-shadow: 0 20px 54px rgba(0, 0, 0, .2);
 }
-.character-studio .character-project-list { background: color-mix(in srgb, var(--surface) 95%, #17243a); }
+.character-studio .character-project-list { background: var(--surface); }
 .character-studio .character-project-list > header,
 .character-studio .character-workbench > header { min-height: 70px; padding: 14px 16px; }
 .character-studio .character-project-list header strong,
@@ -203,7 +203,7 @@
 .character-studio .character-production-heading { gap: 11px; padding: 24px 18px 0; }
 .character-studio .character-production-heading span { font-size: 15px; letter-spacing: -.015em; }
 .character-studio .character-production-heading small { font-size: 11px; }
-.character-studio .character-production-heading em { padding: 4px 8px; border: 1px solid rgba(141,184,255,.25); border-radius: 999px; background: rgba(141,184,255,.08); font-size: 9px; }
+.character-studio .character-production-heading em { padding: 4px 8px; border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--line)); border-radius: 999px; background: var(--accent-soft); font-size: 9px; }
 .character-studio .character-survey-render-controls {
   grid-template-columns: minmax(220px, .8fr) minmax(220px, .7fr) minmax(260px, 1fr);
   align-items: end;
@@ -212,7 +212,7 @@
   padding: 13px 14px;
   border: 1px solid color-mix(in srgb, var(--asset-tone) 24%, var(--line));
   border-radius: 12px;
-  background: linear-gradient(100deg, rgba(91, 147, 219, .1), rgba(91, 147, 219, .025));
+  background: var(--surface-2);
 }
 .character-studio .character-survey-render-controls label { gap: 6px; font-size: 10px; }
 .character-studio .character-survey-render-controls select { height: 39px; font-size: 10px; }
@@ -232,15 +232,15 @@
 .character-studio .character-media-stage {
   min-height: 440px;
   padding: 14px;
-  background: radial-gradient(circle at 50% 30%, var(--character-glow), transparent 48%), #111720;
+  background: radial-gradient(circle at 50% 30%, var(--character-glow), transparent 48%), var(--bg);
 }
 .character-studio .character-media-stage img,
 .character-studio .character-media-stage video {
   width: 100%;
   height: 412px;
-  border: 1px solid rgba(141,184,255,.13);
+  border: 1px solid var(--line);
   border-radius: 10px;
-  background: #0b0f15;
+  background: #080b09;
   object-fit: contain;
   box-shadow: 0 12px 32px rgba(0,0,0,.25);
 }
@@ -258,7 +258,7 @@
 .character-studio .character-reference-set fieldset label { font-size: 10px; }
 .character-studio .character-reference-grid { grid-template-columns: repeat(auto-fill, minmax(155px, 1fr)); gap: 12px; padding: 14px; }
 .character-studio .character-reference-grid figure { border-radius: 10px; }
-.character-studio .character-reference-grid figure img { aspect-ratio: 4 / 5; background: #0d1219; object-fit: contain; }
+.character-studio .character-reference-grid figure img { aspect-ratio: 4 / 5; background: #080b09; object-fit: contain; }
 .character-studio .character-reference-grid figcaption { gap: 6px; padding: 8px; font-size: 9px; }
 .character-studio .character-reference-grid .reference-type-picker { font-size: 9px; }
 .character-studio .character-reference-grid .reference-type-picker select { max-width: 105px; min-height: 28px; }
