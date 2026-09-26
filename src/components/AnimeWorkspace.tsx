@@ -19,6 +19,9 @@ type StoredWorkspace = {
   vaeName: string
   samplerName: string
   scheduler: string
+  loraName: string
+  loraStrengthModel: number
+  loraStrengthClip: number
   seed: number
   steps: number
   cfg: number
@@ -39,6 +42,9 @@ const defaults: StoredWorkspace = {
   vaeName: '',
   samplerName: animaDefaults.samplerName,
   scheduler: animaDefaults.scheduler,
+  loraName: '',
+  loraStrengthModel: 1,
+  loraStrengthClip: 1,
   seed: Math.floor(Math.random() * 1_000_000_000),
   steps: animaDefaults.steps,
   cfg: animaDefaults.cfg,
@@ -78,6 +84,9 @@ export function AnimeWorkspace({
   const [vaeName, setVaeName] = useState(initial.vaeName)
   const [samplerName, setSamplerName] = useState(initial.samplerName)
   const [scheduler, setScheduler] = useState(initial.scheduler)
+  const [loraName, setLoraName] = useState(initial.loraName)
+  const [loraStrengthModel, setLoraStrengthModel] = useState(initial.loraStrengthModel)
+  const [loraStrengthClip, setLoraStrengthClip] = useState(initial.loraStrengthClip)
   const [seed, setSeed] = useState(initial.seed)
   const [steps, setSteps] = useState(initial.steps)
   const [cfg, setCfg] = useState(initial.cfg)
@@ -93,6 +102,7 @@ export function AnimeWorkspace({
   const installedUnets = choices(info, 'UNETLoader', 'unet_name')
   const installedClips = choices(info, 'CLIPLoader', 'clip_name')
   const installedVaes = choices(info, 'VAELoader', 'vae_name')
+  const installedLoras = choices(info, 'LoraLoader', 'lora_name')
   const installedSamplers = choices(info, 'KSampler', 'sampler_name')
   const installedSchedulers = choices(info, 'KSampler', 'scheduler')
 
@@ -138,8 +148,8 @@ export function AnimeWorkspace({
   }, [])
 
   useEffect(() => {
-    localStorage.setItem('anime.workspace', JSON.stringify({ modelType, prompt, negativePrompt, resolution, checkpoint, unetName, clipName, vaeName, samplerName, scheduler, seed, steps, cfg, clipSkip }))
-  }, [checkpoint, cfg, clipName, clipSkip, modelType, negativePrompt, prompt, resolution, samplerName, scheduler, seed, steps, unetName, vaeName])
+    localStorage.setItem('anime.workspace', JSON.stringify({ modelType, prompt, negativePrompt, resolution, checkpoint, unetName, clipName, vaeName, samplerName, scheduler, loraName, loraStrengthModel, loraStrengthClip, seed, steps, cfg, clipSkip }))
+  }, [checkpoint, cfg, clipName, clipSkip, loraName, loraStrengthClip, loraStrengthModel, modelType, negativePrompt, prompt, resolution, samplerName, scheduler, seed, steps, unetName, vaeName])
 
   useEffect(() => {
     if (!job) return
@@ -181,9 +191,9 @@ export function AnimeWorkspace({
   }
 
   const available = modelType === 'checkpoint'
-    ? Boolean(checkpoint) && installedCheckpoints.includes(checkpoint) && (installedSamplers.length === 0 || installedSamplers.includes(samplerName)) && (installedSchedulers.length === 0 || installedSchedulers.includes(scheduler))
+    ? Boolean(checkpoint) && installedCheckpoints.includes(checkpoint) && (!loraName || installedLoras.includes(loraName)) && (installedSamplers.length === 0 || installedSamplers.includes(samplerName)) && (installedSchedulers.length === 0 || installedSchedulers.includes(scheduler))
     : Boolean(unetName) && installedUnets.includes(unetName) && Boolean(clipName) && installedClips.includes(clipName) && Boolean(vaeName) && installedVaes.includes(vaeName)
-      && (installedSamplers.length === 0 || installedSamplers.includes(samplerName)) && (installedSchedulers.length === 0 || installedSchedulers.includes(scheduler))
+      && (!loraName || installedLoras.includes(loraName)) && (installedSamplers.length === 0 || installedSamplers.includes(samplerName)) && (installedSchedulers.length === 0 || installedSchedulers.includes(scheduler))
 
   const create = async () => {
     if (!connected || !available || !prompt.trim()) return
@@ -191,8 +201,8 @@ export function AnimeWorkspace({
     try {
       const [width, height] = resolution.split('x').map(Number)
       const workflow = modelType === 'anima'
-        ? buildAnima(prompt.trim(), negativePrompt.trim(), width, height, seed, unetName, clipName, vaeName, steps, cfg, samplerName, scheduler)
-        : buildCheckpointImage(prompt.trim(), negativePrompt.trim(), width, height, seed, checkpoint, steps, cfg, samplerName, scheduler, clipSkip)
+        ? buildAnima(prompt.trim(), negativePrompt.trim(), width, height, seed, unetName, clipName, vaeName, steps, cfg, samplerName, scheduler, loraName, loraStrengthModel, loraStrengthClip)
+        : buildCheckpointImage(prompt.trim(), negativePrompt.trim(), width, height, seed, checkpoint, steps, cfg, samplerName, scheduler, clipSkip, loraName, loraStrengthModel, loraStrengthClip)
       const response = await window.minimax.submitPrompt(url, workflow)
       setJob({ id: response.prompt_id, url })
     } catch (caught) {
@@ -261,6 +271,21 @@ export function AnimeWorkspace({
             {installedVaes.map((name) => <option key={name} value={name}>{name}</option>)}
           </select></label>
         </div>}
+
+        <div className="field-group">
+          <div className="field-label"><label htmlFor="anime-lora">LoRA adapter <small>Optional</small></label><span>{installedLoras.length} installed</span></div>
+          <select id="anime-lora" value={loraName} disabled={busy} onChange={(event) => setLoraName(event.target.value)}>
+            <option value="">No LoRA</option>
+            {loraName && !installedLoras.includes(loraName) && <option value={loraName}>{loraName} · unavailable</option>}
+            {installedLoras.map((name) => <option key={name} value={name}>{name}</option>)}
+          </select>
+          {loraName && <div className="zimage-quality-controls">
+            <label>Model strength<input aria-label="LoRA model strength" type="number" min={-2} max={2} step="0.05" value={loraStrengthModel} disabled={busy} onChange={(event) => setLoraStrengthModel(Number(event.target.value))} /></label>
+            <label>CLIP strength<input aria-label="LoRA CLIP strength" type="number" min={-2} max={2} step="0.05" value={loraStrengthClip} disabled={busy} onChange={(event) => setLoraStrengthClip(Number(event.target.value))} /></label>
+          </div>}
+          <p className="field-help">Choose a LoRA trained for the selected model family, then add its trigger words to the image prompt. Anima and Illustrious LoRAs are not interchangeable.</p>
+          {loraName && !installedLoras.includes(loraName) && <p className="field-help upscale-warning">This LoRA is not currently registered with ComfyUI. Choose another adapter or refresh the ComfyUI connection.</p>}
+        </div>
 
         <div className="field-group">
           <div className="field-label"><label htmlFor="anime-prompt">Image prompt</label><span>{prompt.length.toLocaleString()} characters</span></div>
